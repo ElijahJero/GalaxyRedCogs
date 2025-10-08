@@ -1,0 +1,19 @@
+{
+  "author": [
+    "Elijah Jero"
+  ],
+  "name": "SongLink",
+  "short": "Universal music links",
+  "description": "Automatically generates universal SongLink embeds for supported music service URLs. Admins can register channels for auto-processing.",
+  "install_msg": "SongLink cog loaded. Use [p]songchannel register <channel> to enable automatic SongLink conversion.",
+  "requirements": [],
+  "tags": [
+    "music",
+    "utility",
+    "links"
+  ],
+  "min_bot_version": "3.5.0",
+  "hidden": false,
+  "type": "COG"
+}
+
