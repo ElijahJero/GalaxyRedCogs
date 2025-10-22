@@ -35,11 +35,11 @@ class BotSheild(commands.Cog):
         New members after setup are never automatically verified.
         """
         if ctx.guild is None:
-            await ctx.send("This command must be used in a server.")
+            await ctx.send(embed=discord.Embed(description="This command must be used in a server.", color=discord.Color.red()))
             return
 
         if captcha_count < 1:
-            await ctx.send("Captcha amount must be at least 1.")
+            await ctx.send(embed=discord.Embed(description="Captcha amount must be at least 1.", color=discord.Color.red()))
             return
 
         guild_id = str(ctx.guild.id)
@@ -53,7 +53,13 @@ class BotSheild(commands.Cog):
             "log_channel_id": log_channel.id if log_channel is not None else None,
         }
         await self.config.protected_servers.set(protected)
-        await ctx.send(f"Server **{ctx.guild.name}** is now protected. Captchas required: {captcha_count}. Auto-verify rule: {auto_verify_days}. Log channel: {log_channel.mention if log_channel else 'None'}.")
+
+        embed = discord.Embed(title="Server Protected", color=discord.Color.green())
+        embed.add_field(name="Server", value=f"{ctx.guild.name} (ID: {ctx.guild.id})", inline=False)
+        embed.add_field(name="Captchas required", value=str(captcha_count), inline=True)
+        embed.add_field(name="Auto-verify rule (days)", value=str(auto_verify_days), inline=True)
+        embed.add_field(name="Log channel", value=(log_channel.mention if log_channel else "None"), inline=False)
+        await ctx.send(embed=embed)
 
         # Apply auto-verification to existing members according to rule
         users_file = os.path.join(os.path.dirname(__file__), "users.json")
@@ -170,9 +176,11 @@ class BotSheild(commands.Cog):
         choices = [correct_sum] + wrong_choices[:3]
         random.shuffle(choices)  # randomize order
 
-        # Build human-friendly message
+        # Build embed captcha message
         try:
-            captcha_msg = await channel.send(f"{member.mention} The confirm you are not a bot, please react with the sum of {number_a} and {number_b}")
+            captcha_embed = discord.Embed(title="Captcha Verification", color=discord.Color.blurple())
+            captcha_embed.description = f"Please react with the sum of **{number_a} and {number_b}**.\nYou have 60 seconds."
+            captcha_msg = await channel.send(content=member.mention, embed=captcha_embed)
         except Exception:
             return
 
@@ -287,18 +295,18 @@ class BotSheild(commands.Cog):
                 else:
                     reason_text = f"Fail reason: {fail_reason}"
 
-                # Log to configured channel if available
+                # Log to configured channel if available (embed)
                 if log_channel is not None:
                     try:
-                        log_lines = [
-                            f"Captcha failed for {member} (ID: {member.id}) in #{channel.name} (ID: {channel.id})",
-                            f"Reason: {reason_text}",
-                            f"Original message content: {removed_content or '[empty]'}",
-                        ]
+                        e = discord.Embed(title="Captcha Failed", color=discord.Color.red())
+                        e.add_field(name="User", value=f"{member} (ID: {member.id})", inline=False)
+                        e.add_field(name="Channel", value=f"#{channel.name} (ID: {channel.id})", inline=False)
+                        e.add_field(name="Reason", value=reason_text, inline=False)
+                        e.add_field(name="Original message", value=(removed_content or "[empty]"), inline=False)
                         if attachments:
-                            log_lines.append(f"Attachments: {', '.join(attachments)}")
-                        log_text = "\n".join(log_lines)
-                        await log_channel.send(log_text)
+                            e.add_field(name="Attachments", value=", ".join(attachments), inline=False)
+                        e.set_footer(text=f"Time: {datetime.utcnow().isoformat()}Z")
+                        await log_channel.send(embed=e)
                     except Exception:
                         pass
 
@@ -323,23 +331,29 @@ class BotSheild(commands.Cog):
                     await captcha_msg.delete()
                 except Exception:
                     pass
-                # send verification success then delete after 10s
+                # send verification success then delete after 10s (embed)
                 try:
-                    success_msg = await channel.send(f"{member.mention} Captcha verification successful!")
+                    e = discord.Embed(title="Verification Complete", color=discord.Color.green())
+                    e.description = f"{member.mention} You are now verified."
+                    success_msg = await channel.send(embed=e)
                     await asyncio.sleep(10)
-                    await success_msg.delete()
+                    try:
+                        await success_msg.delete()
+                    except Exception:
+                        pass
                 except Exception:
                     pass
-                # log success
+                # log success (embed)
                 if log_channel is not None:
                     try:
-                        suspicious = elapsed < 2.0
-                        log_lines = [
-                            f"Captcha completed for {member} (ID: {member.id}) in #{channel.name} (ID: {channel.id})",
-                            f"Time taken: {elapsed:.2f}s {'(suspiciously fast)' if suspicious else ''}",
-                            f"Now verified (required {required} captchas).",
-                        ]
-                        await log_channel.send("\n".join(log_lines))
+                        suspicious_text = " (suspiciously fast)" if elapsed < 2.0 else ""
+                        e = discord.Embed(title="Captcha Completed", color=discord.Color.green())
+                        e.add_field(name="User", value=f"{member} (ID: {member.id})", inline=False)
+                        e.add_field(name="Channel", value=f"#{channel.name} (ID: {channel.id})", inline=False)
+                        e.add_field(name="Time taken", value=f"{elapsed:.2f}s{suspicious_text}", inline=False)
+                        e.add_field(name="Status", value=f"Now verified (required {required})", inline=False)
+                        e.set_footer(text=f"Time: {datetime.utcnow().isoformat()}Z")
+                        await log_channel.send(embed=e)
                     except Exception:
                         pass
             else:
@@ -350,29 +364,55 @@ class BotSheild(commands.Cog):
                     await captcha_msg.delete()
                 except Exception:
                     pass
-                # inform user of progress briefly
+                # Inform user only with a generic confirmation (no numeric progress), then delete shortly
                 try:
-                    success_msg = await channel.send(f"{member.mention} Captcha verification successful! ({current_progress}/{required})")
-                    await asyncio.sleep(10)
-                    await success_msg.delete()
+                    e = discord.Embed(title="Captcha Passed", color=discord.Color.green())
+                    e.description = f"{member.mention} Your response was accepted."
+                    success_msg = await channel.send(embed=e)
+                    await asyncio.sleep(5)
+                    try:
+                        await success_msg.delete()
+                    except Exception:
+                        pass
                 except Exception:
                     pass
-                # log progress
+                # log progress to admin channel (still includes numeric progress for staff)
                 if log_channel is not None:
                     try:
-                        elapsed = time.time() - start_time
-                        suspicious = elapsed < 2.0
-                        log_lines = [
-                            f"Captcha completed for {member} (ID: {member.id}) in #{channel.name} (ID: {channel.id})",
-                            f"Time taken: {elapsed:.2f}s {'(suspiciously fast)' if suspicious else ''}",
-                            f"Progress: {current_progress}/{required} captchas.",
-                        ]
-                        await log_channel.send("\n".join(log_lines))
+                        suspicious_text = " (suspiciously fast)" if (time.time() - start_time) < 2.0 else ""
+                        e = discord.Embed(title="Captcha Completed (Progress)", color=discord.Color.green())
+                        e.add_field(name="User", value=f"{member} (ID: {member.id})", inline=False)
+                        e.add_field(name="Channel", value=f"#{channel.name} (ID: {channel.id})", inline=False)
+                        e.add_field(name="Time taken", value=f"{(time.time() - start_time):.2f}s{suspicious_text}", inline=False)
+                        e.add_field(name="Progress", value=f"{current_progress}/{required}", inline=False)
+                        e.set_footer(text=f"Time: {datetime.utcnow().isoformat()}Z")
+                        await log_channel.send(embed=e)
                     except Exception:
                         pass
         finally:
             # ensure file saved
             self._save_users(users)
+
+    @commands.command()
+    @commands.guild_only()
+    @commands.has_permissions(manage_guild=True)
+    async def unprotect_server(self, ctx: commands.Context):
+        """
+        Remove the current server from protection.
+        """
+        if ctx.guild is None:
+            await ctx.send(embed=discord.Embed(description="This command must be used in a server.", color=discord.Color.red()))
+            return
+
+        guild_id = str(ctx.guild.id)
+        protected = await self.config.protected_servers()
+        if guild_id in protected:
+            del protected[guild_id]
+            await self.config.protected_servers.set(protected)
+            embed = discord.Embed(title="Server Unprotected", description=f"Protection removed for **{ctx.guild.name}**.", color=discord.Color.orange())
+            await ctx.send(embed=embed)
+        else:
+            await ctx.send(embed=discord.Embed(description="This server is not protected.", color=discord.Color.yellow()))
 
     @commands.command()
     @commands.guild_only()
@@ -383,7 +423,7 @@ class BotSheild(commands.Cog):
         """
         guild = ctx.guild
         if guild is None:
-            await ctx.send("This command must be used in a server.")
+            await ctx.send(embed=discord.Embed(description="This command must be used in a server.", color=discord.Color.red()))
             return
         users = self._load_users()
         gid = str(guild.id)
@@ -391,7 +431,7 @@ class BotSheild(commands.Cog):
             users[gid] = {}
         users[gid][str(member.id)] = {"verified": True, "progress": 0}
         self._save_users(users)
-        await ctx.send(f"{member.mention} has been marked as verified.")
+        await ctx.send(embed=discord.Embed(description=f"{member.mention} has been marked as verified.", color=discord.Color.green()))
 
     @commands.command()
     @commands.guild_only()
@@ -402,7 +442,7 @@ class BotSheild(commands.Cog):
         """
         guild = ctx.guild
         if guild is None:
-            await ctx.send("This command must be used in a server.")
+            await ctx.send(embed=discord.Embed(description="This command must be used in a server.", color=discord.Color.red()))
             return
         users = self._load_users()
         gid = str(guild.id)
@@ -410,6 +450,6 @@ class BotSheild(commands.Cog):
             users[gid][str(member.id)]["verified"] = False
             users[gid][str(member.id)]["progress"] = 0
             self._save_users(users)
-            await ctx.send(f"Verification removed for {member.mention}.")
+            await ctx.send(embed=discord.Embed(description=f"Verification removed for {member.mention}.", color=discord.Color.orange()))
         else:
-            await ctx.send(f"No verification record found for {member.mention}.")
+            await ctx.send(embed=discord.Embed(description=f"No verification record found for {member.mention}.", color=discord.Color.yellow()))
