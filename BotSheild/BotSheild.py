@@ -7,6 +7,8 @@ import json
 import asyncio
 import time
 from datetime import datetime, timezone
+import discord
+from typing import Optional
 
 class BotSheild(commands.Cog):
     """A cog that provides bot protection features."""
@@ -22,11 +24,14 @@ class BotSheild(commands.Cog):
         self.config.register_global(**default_global)
 
     @commands.command()
-    async def protect_server(self, ctx: commands.Context, captcha_count: int = 1, auto_verify_days: int = -1):
+    @commands.guild_only()
+    @commands.has_permissions(manage_guild=True)
+    async def protect_server(self, ctx: commands.Context, captcha_count: int = 1, auto_verify_days: int = -1, log_channel: Optional[discord.TextChannel] = None):
         """
         Register (or update) the current server as protected.
         captcha_count: how many successful captchas required to become verified (>=1)
         auto_verify_days: -1 = verify nobody; 0 = verify everyone already in server at setup; >0 = verify members who joined at least this many days ago (at setup time).
+        log_channel: optional text channel to receive admin notifications about captcha events.
         New members after setup are never automatically verified.
         """
         if ctx.guild is None:
@@ -34,7 +39,7 @@ class BotSheild(commands.Cog):
             return
 
         if captcha_count < 1:
-            await ctx.send("captcha_count must be at least 1.")
+            await ctx.send("Captcha amount must be at least 1.")
             return
 
         guild_id = str(ctx.guild.id)
@@ -45,9 +50,10 @@ class BotSheild(commands.Cog):
             "captcha_count": captcha_count,
             "auto_verify_days": auto_verify_days,
             "setup_time": setup_time,
+            "log_channel_id": log_channel.id if log_channel is not None else None,
         }
         await self.config.protected_servers.set(protected)
-        await ctx.send(f"Server **{ctx.guild.name}** is now protected. Captchas required: {captcha_count}. Auto-verify rule: {auto_verify_days}.")
+        await ctx.send(f"Server **{ctx.guild.name}** is now protected. Captchas required: {captcha_count}. Auto-verify rule: {auto_verify_days}. Log channel: {log_channel.mention if log_channel else 'None'}.")
 
         # Apply auto-verification to existing members according to rule
         users_file = os.path.join(os.path.dirname(__file__), "users.json")
@@ -151,6 +157,7 @@ class BotSheild(commands.Cog):
         Send a captcha message, add reactions, and wait for the member to react with the correct sum.
         On success, increment progress and mark verified when reaching required count.
         On failure or timeout, delete original message and captcha message.
+        Logs events to configured logging channel if set.
         """
         member = message.author
         channel = message.channel
@@ -165,7 +172,7 @@ class BotSheild(commands.Cog):
 
         # Build human-friendly message
         try:
-            captcha_msg = await channel.send(f"{member.mention} The confirm you arent a bot, please react with the sum of {number_a} and {number_b}")
+            captcha_msg = await channel.send(f"{member.mention} The confirm you are not a bot, please react with the sum of {number_a} and {number_b}")
         except Exception:
             return
 
@@ -182,11 +189,15 @@ class BotSheild(commands.Cog):
         deadline = time.time() + 60
         successful = False
         timed_out = False
+        fail_reason = None
+        reacted_digit = None
+        start_time = time.time()
 
         while True:
             timeout = deadline - time.time()
             if timeout <= 0:
                 timed_out = True
+                fail_reason = "timeout"
                 break
             try:
                 reaction, user = await self.bot.wait_for(
@@ -196,6 +207,7 @@ class BotSheild(commands.Cog):
                 )
             except asyncio.TimeoutError:
                 timed_out = True
+                fail_reason = "timeout"
                 break
 
             # If someone else reacted: remove their reaction and continue waiting
@@ -217,6 +229,7 @@ class BotSheild(commands.Cog):
             if reacted_digit is None:
                 # invalid emoji, treat as wrong
                 successful = False
+                fail_reason = "invalid_reaction"
                 break
 
             if reacted_digit == correct_sum:
@@ -224,6 +237,7 @@ class BotSheild(commands.Cog):
                 break
             else:
                 successful = False
+                fail_reason = f"incorrect_answer:{reacted_digit}"
                 break
 
         users = self._load_users()
@@ -232,6 +246,19 @@ class BotSheild(commands.Cog):
             users[guild_id] = {}
         member_id = str(member.id)
         member_record = users[guild_id].get(member_id, {"verified": False, "progress": 0})
+
+        # gather removed message content/attachments for logging
+        removed_content = message.content if getattr(message, "content", None) else ""
+        attachments = [a.url for a in message.attachments] if getattr(message, "attachments", None) else []
+
+        # find configured log channel
+        log_channel = None
+        try:
+            log_channel_id = guild_conf.get("log_channel_id")
+            if log_channel_id:
+                log_channel = self.bot.get_channel(int(log_channel_id))
+        except Exception:
+            log_channel = None
 
         # handle outcomes
         try:
@@ -245,10 +272,42 @@ class BotSheild(commands.Cog):
                     await captcha_msg.delete()
                 except Exception:
                     pass
+                # prepare log info
+                if fail_reason is None:
+                    fail_reason = "unknown"
+                # Construct friendly reason text
+                if fail_reason.startswith("incorrect_answer"):
+                    parts = fail_reason.split(":")
+                    chosen = parts[1] if len(parts) > 1 else "unknown"
+                    reason_text = f"Incorrect answer selected ({chosen}). Expected: {correct_sum}."
+                elif fail_reason == "timeout":
+                    reason_text = "Timeout (no valid reaction within time limit)."
+                elif fail_reason == "invalid_reaction":
+                    reason_text = "Invalid reaction (not a recognized digit emoji)."
+                else:
+                    reason_text = f"Fail reason: {fail_reason}"
+
+                # Log to configured channel if available
+                if log_channel is not None:
+                    try:
+                        log_lines = [
+                            f"Captcha failed for {member} (ID: {member.id}) in #{channel.name} (ID: {channel.id})",
+                            f"Reason: {reason_text}",
+                            f"Original message content: {removed_content or '[empty]'}",
+                        ]
+                        if attachments:
+                            log_lines.append(f"Attachments: {', '.join(attachments)}")
+                        log_text = "\n".join(log_lines)
+                        await log_channel.send(log_text)
+                    except Exception:
+                        pass
+
                 # no state change on failure (progress stays same)
                 self._save_users(users)
                 return
-            # success path: increment progress and possibly verify
+
+            # success path: compute elapsed, increment progress and possibly verify
+            elapsed = time.time() - start_time
             required = int(guild_conf.get("captcha_count", 1))
             current_progress = int(member_record.get("progress", 0))
             current_progress += 1
@@ -266,11 +325,23 @@ class BotSheild(commands.Cog):
                     pass
                 # send verification success then delete after 10s
                 try:
-                    success_msg = await channel.send(f"{member.mention} verification successful")
+                    success_msg = await channel.send(f"{member.mention} Captcha verification successful!")
                     await asyncio.sleep(10)
                     await success_msg.delete()
                 except Exception:
                     pass
+                # log success
+                if log_channel is not None:
+                    try:
+                        suspicious = elapsed < 2.0
+                        log_lines = [
+                            f"Captcha completed for {member} (ID: {member.id}) in #{channel.name} (ID: {channel.id})",
+                            f"Time taken: {elapsed:.2f}s {'(suspiciously fast)' if suspicious else ''}",
+                            f"Now verified (required {required} captchas).",
+                        ]
+                        await log_channel.send("\n".join(log_lines))
+                    except Exception:
+                        pass
             else:
                 # not yet verified, save progress and delete captcha message
                 users[guild_id][member_id] = member_record
@@ -281,11 +352,64 @@ class BotSheild(commands.Cog):
                     pass
                 # inform user of progress briefly
                 try:
-                    prog_msg = await channel.send(f"{member.mention} captcha passed ({current_progress}/{required}). Complete {required - current_progress} more.")
-                    await asyncio.sleep(5)
-                    await prog_msg.delete()
+                    success_msg = await channel.send(f"{member.mention} Captcha verification successful! ({current_progress}/{required})")
+                    await asyncio.sleep(10)
+                    await success_msg.delete()
                 except Exception:
                     pass
+                # log progress
+                if log_channel is not None:
+                    try:
+                        elapsed = time.time() - start_time
+                        suspicious = elapsed < 2.0
+                        log_lines = [
+                            f"Captcha completed for {member} (ID: {member.id}) in #{channel.name} (ID: {channel.id})",
+                            f"Time taken: {elapsed:.2f}s {'(suspiciously fast)' if suspicious else ''}",
+                            f"Progress: {current_progress}/{required} captchas.",
+                        ]
+                        await log_channel.send("\n".join(log_lines))
+                    except Exception:
+                        pass
         finally:
             # ensure file saved
             self._save_users(users)
+
+    @commands.command()
+    @commands.guild_only()
+    @commands.has_permissions(manage_guild=True)
+    async def addverify(self, ctx: commands.Context, member: discord.Member):
+        """
+        Manually mark a user as verified.
+        """
+        guild = ctx.guild
+        if guild is None:
+            await ctx.send("This command must be used in a server.")
+            return
+        users = self._load_users()
+        gid = str(guild.id)
+        if gid not in users:
+            users[gid] = {}
+        users[gid][str(member.id)] = {"verified": True, "progress": 0}
+        self._save_users(users)
+        await ctx.send(f"{member.mention} has been marked as verified.")
+
+    @commands.command()
+    @commands.guild_only()
+    @commands.has_permissions(manage_guild=True)
+    async def removeverify(self, ctx: commands.Context, member: discord.Member):
+        """
+        Manually remove verification from a user.
+        """
+        guild = ctx.guild
+        if guild is None:
+            await ctx.send("This command must be used in a server.")
+            return
+        users = self._load_users()
+        gid = str(guild.id)
+        if gid in users and str(member.id) in users[gid]:
+            users[gid][str(member.id)]["verified"] = False
+            users[gid][str(member.id)]["progress"] = 0
+            self._save_users(users)
+            await ctx.send(f"Verification removed for {member.mention}.")
+        else:
+            await ctx.send(f"No verification record found for {member.mention}.")
