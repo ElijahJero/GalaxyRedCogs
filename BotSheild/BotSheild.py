@@ -931,3 +931,48 @@ class BotSheild(commands.Cog):
         await self.config.protected_servers.set(protected)
         await ctx.send(embed=discord.Embed(description="Cleared all warning ping roles.", color=discord.Color.orange()))
 
+    async def addverify(self, ctx: commands.Context, member: discord.Member):
+        """Manually mark a user as verified (helper called by botsheild addverify)."""
+        guild = ctx.guild
+        if guild is None:
+            try:
+                await ctx.send(embed=discord.Embed(description="This command must be used in a server.", color=discord.Color.red()))
+            except Exception:
+                pass
+            return
+        users = self._load_users()
+        gid = str(guild.id)
+        if gid not in users:
+            users[gid] = {}
+        users[gid][str(member.id)] = {"verified": True, "progress": 0}
+        try:
+            self._save_users(users)
+        except Exception:
+            pass
+        embed = discord.Embed(title="Verification Updated", color=discord.Color.green())
+        embed.description = f"{member.mention} has been marked as verified."
+        await ctx.send(embed=embed)
+
+    async def removeverify(self, ctx: commands.Context, member: discord.Member):
+        """Manually remove verification from a user (helper called by botsheild removeverify)."""
+        guild = ctx.guild
+        if guild is None:
+            try:
+                await ctx.send(embed=discord.Embed(description="This command must be used in a server.", color=discord.Color.red()))
+            except Exception:
+                pass
+            return
+        users = self._load_users()
+        gid = str(guild.id)
+        if gid in users and str(member.id) in users[gid]:
+            users[gid][str(member.id)]["verified"] = False
+            users[gid][str(member.id)]["progress"] = 0
+            try:
+                self._save_users(users)
+            except Exception:
+                pass
+            embed = discord.Embed(title="Verification Updated", color=discord.Color.orange())
+            embed.description = f"Verification removed for {member.mention}."
+            await ctx.send(embed=embed)
+        else:
+            await ctx.send(embed=discord.Embed(description=f"No verification record found for {member.mention}.", color=discord.Color.yellow()))
