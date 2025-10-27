@@ -139,7 +139,25 @@ class BotSheild(commands.Cog):
         """
         Send a concise, high-visibility warning embed focused on giveaway scams.
         Admin reactions remain the same: 🔨 ban+delete, 🚪 kick, ❌ remove warning.
+        This function now prepends configured ping roles for the guild (if any).
         """
+        # resolve per-guild ping roles (do not modify stored config)
+        ping_text = ""
+        try:
+            protected = await self.config.protected_servers()
+            conf = protected.get(str(channel.guild.id), {}) if channel.guild else {}
+            pr_ids = conf.get("ping_role_ids", [])
+            mentions = []
+            for rid in pr_ids:
+                try:
+                    mentions.append(f"<@&{int(rid)}>")
+                except Exception:
+                    continue
+            if mentions:
+                ping_text = " ".join(mentions)
+        except Exception:
+            ping_text = ""
+
         try:
             desc = (
                 "🚨 Possible Scam — Be Careful! 🚨\n\n"
@@ -174,7 +192,8 @@ class BotSheild(commands.Cog):
                 top = ", ".join(list(matches.keys())[:5])
                 embed.add_field(name="Indicators detected", value=top, inline=False)
             embed.set_footer(text="Staff: react below to take action.")
-            warn_msg = await channel.send(content=target_member.mention, embed=embed)
+            content = f"{ping_text} {target_member.mention}".strip()
+            warn_msg = await channel.send(content=content if content else target_member.mention, embed=embed)
         except Exception:
             return None
 
@@ -200,9 +219,9 @@ class BotSheild(commands.Cog):
         age_str: str,
         matches: Optional[dict],
         original_message: discord.Message,
-        timeout: int = 600,
+        timeout: int = 1800,  # 30 minutes
     ):
-        """Monitor reactions; restrict to admins/mods; act and log."""
+        """Monitor reactions; restrict to admins/mods; act and log. On timeout disable mod actions but keep the warning visible."""
         guild = warn_msg.guild
         if guild is None:
             return
@@ -225,9 +244,19 @@ class BotSheild(commands.Cog):
         while True:
             remaining = end - time.time()
             if remaining <= 0:
-                # Timeout: remove the warning quietly
+                # Timeout: disable admin actions but keep the warning message
                 try:
-                    await warn_msg.delete()
+                    await warn_msg.clear_reactions()
+                except Exception:
+                    pass
+                try:
+                    if warn_msg.embeds:
+                        base = warn_msg.embeds[0]
+                        new_emb = discord.Embed.from_dict(base.to_dict())
+                        new_emb.set_footer(text="Staff action window expired — reactions disabled.")
+                        await warn_msg.edit(embed=new_emb)
+                    else:
+                        await warn_msg.edit(content=warn_msg.content)
                 except Exception:
                     pass
                 return
@@ -238,8 +267,19 @@ class BotSheild(commands.Cog):
                     check=lambda r, u: r.message.id == warn_msg.id,
                 )
             except asyncio.TimeoutError:
+                # Timeout while waiting: disable actions but keep message
                 try:
-                    await warn_msg.delete()
+                    await warn_msg.clear_reactions()
+                except Exception:
+                    pass
+                try:
+                    if warn_msg.embeds:
+                        base = warn_msg.embeds[0]
+                        new_emb = discord.Embed.from_dict(base.to_dict())
+                        new_emb.set_footer(text="Staff action window expired — reactions disabled.")
+                        await warn_msg.edit(embed=new_emb)
+                    else:
+                        await warn_msg.edit(content=warn_msg.content)
                 except Exception:
                     pass
                 return
@@ -819,3 +859,84 @@ class BotSheild(commands.Cog):
         lines = [f"{k}: {v}" for k, v in wl.items()]
         # send as a short message (not embed) to keep it simple
         await ctx.send("Current wordlist:\n" + "\n".join(lines))
+
+    # ----------------------------
+    # New pingroles subcommands
+    # ----------------------------
+    @botsheild.group(name="pingroles", invoke_without_command=True)
+    @commands.guild_only()
+    @commands.has_permissions(manage_guild=True)
+    async def bs_pingroles(self, ctx: commands.Context):
+        """Manage roles that are pinged when a warning is posted. Subcommands: add/remove/list/clear"""
+        await ctx.send("Use subcommands: add, remove, list, clear")
+
+    @bs_pingroles.command(name="add")
+    @commands.guild_only()
+    @commands.has_permissions(manage_guild=True)
+    async def bs_pingroles_add(self, ctx: commands.Context, role: discord.Role):
+        """Add a role to be pinged on warnings for this server."""
+        gid = str(ctx.guild.id)
+        protected = await self.config.protected_servers()
+        conf = protected.get(gid, {}) if protected else {}
+        lst = conf.get("ping_role_ids", [])
+        if role.id in lst:
+            await ctx.send(embed=discord.Embed(description=f"{role.mention} is already in the ping list.", color=discord.Color.yellow()))
+            return
+        lst.append(role.id)
+        conf["ping_role_ids"] = lst
+        protected[gid] = conf
+        await self.config.protected_servers.set(protected)
+        await ctx.send(embed=discord.Embed(description=f"Added {role.mention} to warning pings.", color=discord.Color.green()))
+
+    @bs_pingroles.command(name="remove")
+    @commands.guild_only()
+    @commands.has_permissions(manage_guild=True)
+    async def bs_pingroles_remove(self, ctx: commands.Context, role: discord.Role):
+        """Remove a role from the warning ping list for this server."""
+        gid = str(ctx.guild.id)
+        protected = await self.config.protected_servers()
+        conf = protected.get(gid, {}) if protected else {}
+        lst = conf.get("ping_role_ids", [])
+        if role.id not in lst:
+            await ctx.send(embed=discord.Embed(description=f"{role.mention} is not in the ping list.", color=discord.Color.yellow()))
+            return
+        lst.remove(role.id)
+        conf["ping_role_ids"] = lst
+        protected[gid] = conf
+        await self.config.protected_servers.set(protected)
+        await ctx.send(embed=discord.Embed(description=f"Removed {role.mention} from warning pings.", color=discord.Color.orange()))
+
+    @bs_pingroles.command(name="list")
+    @commands.guild_only()
+    @commands.has_permissions(manage_guild=True)
+    async def bs_pingroles_list(self, ctx: commands.Context):
+        """List roles configured to be pinged on warnings for this server."""
+        gid = str(ctx.guild.id)
+        protected = await self.config.protected_servers()
+        conf = protected.get(gid, {}) if protected else {}
+        lst = conf.get("ping_role_ids", [])
+        if not lst:
+            await ctx.send(embed=discord.Embed(description="No roles configured to be pinged for warnings.", color=discord.Color.yellow()))
+            return
+        mentions = []
+        for rid in lst:
+            try:
+                role = ctx.guild.get_role(int(rid))
+                mentions.append(role.mention if role else f"(missing role {rid})")
+            except Exception:
+                mentions.append(f"(invalid id {rid})")
+        await ctx.send(embed=discord.Embed(description="Configured ping roles:\n" + ", ".join(mentions), color=discord.Color.blue()))
+
+    @bs_pingroles.command(name="clear")
+    @commands.guild_only()
+    @commands.has_permissions(manage_guild=True)
+    async def bs_pingroles_clear(self, ctx: commands.Context):
+        """Clear all roles configured to be pinged on warnings for this server."""
+        gid = str(ctx.guild.id)
+        protected = await self.config.protected_servers()
+        conf = protected.get(gid, {}) if protected else {}
+        conf["ping_role_ids"] = []
+        protected[gid] = conf
+        await self.config.protected_servers.set(protected)
+        await ctx.send(embed=discord.Embed(description="Cleared all warning ping roles.", color=discord.Color.orange()))
+
