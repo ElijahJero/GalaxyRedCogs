@@ -9,6 +9,8 @@ import time
 from datetime import datetime, timezone
 import discord
 from typing import Optional
+import re
+from .ScamCloud import analyze_text
 
 class BotSheild(commands.Cog):
     """A cog that provides bot protection features."""
@@ -20,83 +22,301 @@ class BotSheild(commands.Cog):
             # map guild_id -> {"captcha_count": int, "auto_verify_days": int, "setup_time": int}
             "protected_servers": {},
             "alert_role": None,
+            # scam_protection controls message analysis for newer members
+            "scam_protection": {
+                "enabled": True,
+                "new_member_days": 30,     # default window in days to scan messages from members
+                "min_score": 1.0,         # threshold to trigger a warning
+                # wordlist: key -> score (float). special key "tld" matches top-level domains
+                "wordlist": {
+                    "tld": 0.5,
+                },
+            },
         }
         self.config.register_global(**default_global)
 
-    @commands.command()
+    # ----------------------------
+    # Admin command group wrappers
+    # ----------------------------
+    @commands.group(name="botsheild", invoke_without_command=True)
+    @commands.guild_only()
+    async def botsheild(self, ctx: commands.Context):
+        """Top-level BotSheild command. Use subcommands."""
+        await ctx.send("Use subcommands: protect, unprotect, addverify, removeverify, scam ...")
+
+    @botsheild.command(name="protect")
     @commands.guild_only()
     @commands.has_permissions(manage_guild=True)
-    async def protect_server(self, ctx: commands.Context, captcha_count: int = 1, auto_verify_days: int = -1, log_channel: Optional[discord.TextChannel] = None):
-        """
-        Register (or update) the current server as protected.
-        captcha_count: how many successful captchas required to become verified (>=1)
-        auto_verify_days: -1 = verify nobody; 0 = verify everyone already in server at setup; >0 = verify members who joined at least this many days ago (at setup time).
-        log_channel: optional text channel to receive admin notifications about captcha events.
-        New members after setup are never automatically verified.
-        """
-        if ctx.guild is None:
-            await ctx.send(embed=discord.Embed(description="This command must be used in a server.", color=discord.Color.red()))
-            return
+    async def bs_protect(self, ctx: commands.Context, captcha_count: int = 1, auto_verify_days: int = -1, log_channel: Optional[discord.TextChannel] = None):
+        """Alias to protect_server as a subcommand."""
+        await self.protect_server(ctx, captcha_count=captcha_count, auto_verify_days=auto_verify_days, log_channel=log_channel)
 
-        if captcha_count < 1:
-            await ctx.send(embed=discord.Embed(description="Captcha amount must be at least 1.", color=discord.Color.red()))
-            return
+    @botsheild.command(name="unprotect")
+    @commands.guild_only()
+    @commands.has_permissions(manage_guild=True)
+    async def bs_unprotect(self, ctx: commands.Context):
+        """Alias to unprotect_server as a subcommand."""
+        await self.unprotect_server(ctx)
 
-        guild_id = str(ctx.guild.id)
-        protected = await self.config.protected_servers()
-        setup_time = int(time.time())
+    @botsheild.command(name="addverify")
+    @commands.guild_only()
+    @commands.has_permissions(manage_guild=True)
+    async def bs_addverify(self, ctx: commands.Context, member: discord.Member):
+        """Alias to addverify as a subcommand."""
+        await self.addverify(ctx, member)
 
-        protected[guild_id] = {
-            "captcha_count": captcha_count,
-            "auto_verify_days": auto_verify_days,
-            "setup_time": setup_time,
-            "log_channel_id": log_channel.id if log_channel is not None else None,
-        }
-        await self.config.protected_servers.set(protected)
+    @botsheild.command(name="removeverify")
+    @commands.guild_only()
+    @commands.has_permissions(manage_guild=True)
+    async def bs_removeverify(self, ctx: commands.Context, member: discord.Member):
+        """Alias to removeverify as a subcommand."""
+        await self.removeverify(ctx, member)
 
-        embed = discord.Embed(title="Server Protected", color=discord.Color.green())
-        embed.add_field(name="Server", value=f"{ctx.guild.name} (ID: {ctx.guild.id})", inline=False)
-        embed.add_field(name="Captchas required", value=str(captcha_count), inline=True)
-        embed.add_field(name="Auto-verify rule (days)", value=str(auto_verify_days), inline=True)
-        embed.add_field(name="Log channel", value=(log_channel.mention if log_channel else "None"), inline=False)
-        await ctx.send(embed=embed)
+    @botsheild.group(name="scam", invoke_without_command=True)
+    @commands.guild_only()
+    @commands.has_permissions(manage_guild=True)
+    async def bs_scam(self, ctx: commands.Context):
+        """Scam protection configuration group."""
+        await ctx.send("Use subcommands: setdays, setminscore, word_add, word_remove, word_list")
 
-        # Apply auto-verification to existing members according to rule
-        users_file = os.path.join(os.path.dirname(__file__), "users.json")
+    @bs_scam.command(name="setdays")
+    @commands.guild_only()
+    @commands.has_permissions(manage_guild=True)
+    async def bs_scam_setdays(self, ctx: commands.Context, days: int):
+        await self.scam_setdays(ctx, days)
+
+    @bs_scam.command(name="setminscore")
+    @commands.guild_only()
+    @commands.has_permissions(manage_guild=True)
+    async def bs_scam_setminscore(self, ctx: commands.Context, min_score: float):
+        await self.scam_setminscore(ctx, min_score)
+
+    @bs_scam.command(name="word_add")
+    @commands.guild_only()
+    @commands.has_permissions(manage_guild=True)
+    async def bs_scam_word_add(self, ctx: commands.Context, token: str, score: float):
+        await self.scam_word_add(ctx, token, score)
+
+    @bs_scam.command(name="word_remove")
+    @commands.guild_only()
+    @commands.has_permissions(manage_guild=True)
+    async def bs_scam_word_remove(self, ctx: commands.Context, token: str):
+        await self.scam_word_remove(ctx, token)
+
+    @bs_scam.command(name="word_list")
+    @commands.guild_only()
+    @commands.has_permissions(manage_guild=True)
+    async def bs_scam_word_list(self, ctx: commands.Context):
+        await self.scam_word_list(ctx)
+
+    # ----------------------------
+    # Warning + admin reaction UI
+    # ----------------------------
+    async def _resolve_log_channel(self, guild: discord.Guild) -> Optional[discord.TextChannel]:
         try:
-            with open(users_file, "r", encoding="utf-8") as f:
-                users_data = json.load(f)
-        except Exception:
-            users_data = {}
-
-        if guild_id not in users_data:
-            users_data[guild_id] = {}
-
-        if auto_verify_days != -1:
-            now_ts = setup_time
-            for member in ctx.guild.members:
-                # skip bots and the bot itself
-                if member.bot:
-                    continue
-                joined_at = member.joined_at
-                if joined_at is None:
-                    continue
-                joined_ts = int(joined_at.replace(tzinfo=timezone.utc).timestamp())
-                if auto_verify_days == 0:
-                    # verify everyone who was present at setup (joined before or at setup_time)
-                    if joined_ts <= now_ts:
-                        users_data[guild_id][str(member.id)] = {"verified": True, "progress": 0}
-                elif auto_verify_days > 0:
-                    # verify members who joined at least auto_verify_days ago (relative to setup_time)
-                    required_seconds = auto_verify_days * 86400
-                    if now_ts - joined_ts >= required_seconds:
-                        users_data[guild_id][str(member.id)] = {"verified": True, "progress": 0}
-        # write back users_data
-        try:
-            with open(users_file, "w", encoding="utf-8") as f:
-                json.dump(users_data, f, indent=2)
+            protected = await self.config.protected_servers()
+            conf = protected.get(str(guild.id), {})
+            chan_id = conf.get("log_channel_id")
+            if chan_id:
+                ch = self.bot.get_channel(int(chan_id)) or guild.get_channel(int(chan_id))
+                if isinstance(ch, discord.TextChannel):
+                    return ch
         except Exception:
             pass
+        return None
+
+    async def _send_flag_warning(
+        self,
+        channel: discord.TextChannel,
+        target_member: discord.Member,
+        *,
+        score: float,
+        age_str: str,
+        age_seconds: Optional[int] = None,  # added param
+        matches: Optional[dict],
+        original_message: discord.Message,
+    ) -> Optional[discord.Message]:
+        """
+        Send a concise, high-visibility warning embed focused on giveaway scams.
+        Admin reactions remain the same: 🔨 ban+delete, 🚪 kick, ❌ remove warning.
+        """
+        try:
+            desc = (
+                "🚨 Possible Scam — Be Careful! 🚨\n\n"
+                "This message matches common scam patterns (promises of free items, urgent asks to DM or move off-server).\n\n"
+                "Quick safety tips:\n"
+                "• Don’t DM, transfer items, or share codes/account info.\n"
+                "• Don’t click unknown links or scan QR codes — they can contain malware.\n"
+                "• If asked to move to another server or external site, be suspicious.\n\n"
+                "This may be a false positive. If you intend to give something away or are unsure, contact a moderator first."
+            )
+            embed = discord.Embed(
+                title="🚨⚠️ POSSIBLE SCAM DETECTED ⚠️🚨",
+                description=desc,
+                color=discord.Color.red(),
+            )
+            embed.add_field(name="Member", value=target_member.mention, inline=True)
+            embed.add_field(name="Time in server", value=age_str, inline=True)
+
+            # If the member has been in the server for less than 7 days, add a clear notice
+            try:
+                if age_seconds is not None and age_seconds < 7 * 86400:
+                    embed.add_field(
+                        name="Community status",
+                        value="This user just joined the server, use extreme caution.",
+                        inline=False,
+                    )
+            except Exception:
+                # fail silently if age_seconds can't be interpreted
+                pass
+
+            if matches:
+                top = ", ".join(list(matches.keys())[:5])
+                embed.add_field(name="Indicators detected", value=top, inline=False)
+            embed.set_footer(text="Staff: react below to take action.")
+            warn_msg = await channel.send(content=target_member.mention, embed=embed)
+        except Exception:
+            return None
+
+        # Add admin action reactions
+        for e in ("🔨", "🚪", "❌"):
+            try:
+                await warn_msg.add_reaction(e)
+            except Exception:
+                pass
+
+        # Start monitoring reactions (logs include score and full context)
+        try:
+            asyncio.create_task(self._monitor_admin_reactions(warn_msg, target_member, score, age_str, matches, original_message))
+        except Exception:
+            pass
+        return warn_msg
+
+    async def _monitor_admin_reactions(
+        self,
+        warn_msg: discord.Message,
+        target_member: discord.Member,
+        score: float,
+        age_str: str,
+        matches: Optional[dict],
+        original_message: discord.Message,
+        timeout: int = 600,
+    ):
+        """Monitor reactions; restrict to admins/mods; act and log."""
+        guild = warn_msg.guild
+        if guild is None:
+            return
+
+        actions = {"🔨": "ban", "🚪": "kick", "❌": "remove"}
+        end = time.time() + timeout
+
+        def is_privileged(member: Optional[discord.Member]) -> bool:
+            if member is None:
+                return False
+            perms = member.guild_permissions
+            return any([
+                perms.administrator,
+                perms.manage_guild,
+                perms.ban_members,
+                perms.kick_members,
+                perms.manage_messages,
+            ])
+
+        while True:
+            remaining = end - time.time()
+            if remaining <= 0:
+                # Timeout: remove the warning quietly
+                try:
+                    await warn_msg.delete()
+                except Exception:
+                    pass
+                return
+            try:
+                reaction, user = await self.bot.wait_for(
+                    "reaction_add",
+                    timeout=remaining,
+                    check=lambda r, u: r.message.id == warn_msg.id,
+                )
+            except asyncio.TimeoutError:
+                try:
+                    await warn_msg.delete()
+                except Exception:
+                    pass
+                return
+
+            if user.bot:
+                continue
+
+            emoji = str(reaction.emoji)
+            actor: Optional[discord.Member] = guild.get_member(user.id)
+            if not is_privileged(actor):
+                # Remove unauthorized user reaction
+                try:
+                    await warn_msg.remove_reaction(emoji, user)
+                except Exception:
+                    pass
+                continue
+
+            action = actions.get(emoji)
+            if action is None:
+                # Not one of our control emojis; remove it
+                try:
+                    await warn_msg.remove_reaction(emoji, user)
+                except Exception:
+                    pass
+                continue
+
+            # Perform action
+            action_done = None
+            reason = f"Performed via BotSheild by {actor} ({actor.id}) on warning."
+            try:
+                if action == "ban":
+                    # Delete up to last 7 days of messages (Discord limitation)
+                    await guild.ban(target_member, reason=reason, delete_message_days=7)
+                    action_done = "Ban + delete recent messages (up to 7 days)"
+                elif action == "kick":
+                    await guild.kick(target_member, reason=reason)
+                    action_done = "Kick"
+                else:
+                    action_done = "Remove warning"
+            except Exception:
+                # Even if moderation fails, still remove the warning so we don't loop forever
+                if action == "ban":
+                    action_done = "Ban attempt failed"
+                elif action == "kick":
+                    action_done = "Kick attempt failed"
+                else:
+                    action_done = "Remove warning"
+
+            # Remove the warning message
+            try:
+                await warn_msg.delete()
+            except Exception:
+                pass
+
+            # Log details to configured log channel
+            log_channel = await self._resolve_log_channel(guild)
+            if log_channel:
+                try:
+                    e = discord.Embed(title="Admin Action on Warning", color=discord.Color.orange())
+                    e.add_field(name="Action", value=action_done, inline=False)
+                    e.add_field(name="Actor", value=f"{actor.mention if actor else user.mention} (ID: {user.id})", inline=False)
+                    e.add_field(name="Target", value=f"{target_member.mention} (ID: {target_member.id})", inline=False)
+                    e.add_field(name="Channel", value=f"#{original_message.channel.name} (ID: {original_message.channel.id})", inline=False)
+                    # Original flagged message info
+                    content = original_message.content or "[empty]"
+                    e.add_field(name="Flagged Message", value=content[:1024], inline=False)
+                    if original_message.attachments:
+                        e.add_field(name="Attachments", value=", ".join(a.url for a in original_message.attachments), inline=False)
+                    e.add_field(name="Score / Matches", value=f"{score:.2f} / {', '.join(list(matches.keys())[:5]) if matches else 'none'}", inline=False)
+                    e.add_field(name="Message Link", value=original_message.jump_url, inline=False)
+                    e.set_footer(text=f"Time: {datetime.utcnow().isoformat()}Z")
+                    await log_channel.send(embed=e)
+                except Exception:
+                    pass
+
+            # End after the first valid admin action
+            return
 
     def generate_captcha(self):
         # Generate a random target sum 0-9 and split into two numbers
@@ -140,21 +360,102 @@ class BotSheild(commands.Cog):
         guild_id = str(message.guild.id)
         if guild_id not in protected_servers:
             return
+        guild_conf = protected_servers.get(guild_id, {})
 
-        # Load verification status from users.json
+        # Load verification and per-user stats from users.json
         users_data = self._load_users()
         if guild_id not in users_data:
             users_data[guild_id] = {}
 
         member_id = str(message.author.id)
+        # ensure a record exists and preserve any existing fields
+        member_record = users_data[guild_id].get(member_id)
+        if member_record is None:
+            member_record = {"verified": False, "progress": 0}
+            users_data[guild_id][member_id] = member_record
+        else:
+            # preserve existing fields for compatibility; do NOT track messages_sent here
+            pass
+
+        # persist any created record (do not modify verification/progress here)
+        self._save_users(users_data)
+
+        # determine verification status (may be changed below if flagged)
+        verified = bool(member_record.get("verified", False))
+
+        # Scam analysis for new-ish members (configurable)
+        scam_conf = await self.config.scam_protection()
+        try:
+            scam_enabled = bool(scam_conf.get("enabled", True))
+        except Exception:
+            scam_enabled = True
+
+        # compute member join age once
+        joined_at = message.author.joined_at
+        age_seconds = None
+        if joined_at is not None:
+            now_ts = int(time.time())
+            joined_ts = int(joined_at.replace(tzinfo=timezone.utc).timestamp())
+            age_seconds = now_ts - joined_ts
+
+        if scam_enabled and age_seconds is not None:
+            new_member_days = int(scam_conf.get("new_member_days", 30))
+            # Only scan members who have been in the server less than the configured threshold
+            if age_seconds < new_member_days * 86400:
+                # analyze this message using ScamCloud analyzer (case-insensitive)
+                wordlist = scam_conf.get("wordlist", {})
+                score, matches = analyze_text(message.content or "", wordlist)
+                min_score = float(scam_conf.get("min_score", 1.0))
+                if score >= min_score:
+                    # format how long they've been in server
+                    days = age_seconds // 86400
+                    hours = (age_seconds % 86400) // 3600
+                    minutes = (age_seconds % 3600) // 60
+                    age_str = f"{days}d {hours}h {minutes}m"
+
+                    # If the user is currently verified, remove verification and persist
+                    if verified:
+                        users_data[guild_id][member_id]["verified"] = False
+                        users_data[guild_id][member_id]["progress"] = 0
+                        try:
+                            self._save_users(users_data)
+                        except Exception:
+                            pass
+                        verified = False
+                        # send warning with admin reactions (pass age_seconds)
+                        try:
+                            await self._send_flag_warning(
+                                message.channel,
+                                message.author,
+                                score=score,
+                                age_str=age_str,
+                                age_seconds=age_seconds,
+                                matches=matches,
+                                original_message=message,
+                            )
+                        except Exception:
+                            pass
+                    else:
+                        # unverified: still send warning with admin reactions (pass age_seconds)
+                        try:
+                            await self._send_flag_warning(
+                                message.channel,
+                                message.author,
+                                score=score,
+                                age_str=age_str,
+                                age_seconds=age_seconds,
+                                matches=matches,
+                                original_message=message,
+                            )
+                        except Exception:
+                            pass
+
+        # refresh member_record from possibly-updated users_data
         member_record = users_data[guild_id].get(member_id, {"verified": False, "progress": 0})
         verified = bool(member_record.get("verified", False))
         if verified:
             return
 
-        # If for some reason the person was auto-verified at setup (but file not updated), handle now:
-        # (we already applied auto-verify on protect_server; keep this as safeguard)
-        guild_conf = protected_servers.get(guild_id, {})
         # proceed to send a captcha challenge
         await self.handle_captcha_challenge(message, guild_conf)
 
@@ -453,3 +754,68 @@ class BotSheild(commands.Cog):
             await ctx.send(embed=discord.Embed(description=f"Verification removed for {member.mention}.", color=discord.Color.orange()))
         else:
             await ctx.send(embed=discord.Embed(description=f"No verification record found for {member.mention}.", color=discord.Color.yellow()))
+
+    @commands.command()
+    @commands.guild_only()
+    @commands.has_permissions(manage_guild=True)
+    async def scam_setdays(self, ctx: commands.Context, days: int):
+        """Set how many days a member is considered 'new' for scam analysis (default 30)."""
+        if days < 0:
+            await ctx.send("Days must be >= 0.")
+            return
+        conf = await self.config.scam_protection()
+        conf["new_member_days"] = int(days)
+        await self.config.scam_protection.set(conf)
+        await ctx.send(f"Scam detection window set to {days} days.")
+
+    @commands.command()
+    @commands.guild_only()
+    @commands.has_permissions(manage_guild=True)
+    async def scam_setminscore(self, ctx: commands.Context, min_score: float):
+        """Set the score threshold above which a warning is sent."""
+        conf = await self.config.scam_protection()
+        conf["min_score"] = float(min_score)
+        await self.config.scam_protection.set(conf)
+        await ctx.send(f"Scam detection min_score set to {min_score}.")
+
+    @commands.command()
+    @commands.guild_only()
+    @commands.has_permissions(manage_guild=True)
+    async def scam_word_add(self, ctx: commands.Context, token: str, score: float):
+        """Add a token to the wordlist with an associated score. Use 'tld' as token to score TLDs."""
+        conf = await self.config.scam_protection()
+        wl = conf.get("wordlist", {})
+        wl[token.lower()] = float(score)
+        conf["wordlist"] = wl
+        await self.config.scam_protection.set(conf)
+        await ctx.send(f"Added wordlist token '{token}' with score {score}.")
+
+    @commands.command()
+    @commands.guild_only()
+    @commands.has_permissions(manage_guild=True)
+    async def scam_word_remove(self, ctx: commands.Context, token: str):
+        """Remove a token from the wordlist."""
+        conf = await self.config.scam_protection()
+        wl = conf.get("wordlist", {})
+        token_l = token.lower()
+        if token_l in wl:
+            del wl[token_l]
+            conf["wordlist"] = wl
+            await self.config.scam_protection.set(conf)
+            await ctx.send(f"Removed wordlist token '{token}'.")
+        else:
+            await ctx.send(f"Token '{token}' not found in wordlist.")
+
+    @commands.command()
+    @commands.guild_only()
+    @commands.has_permissions(manage_guild=True)
+    async def scam_word_list(self, ctx: commands.Context):
+        """List current wordlist tokens and their scores."""
+        conf = await self.config.scam_protection()
+        wl = conf.get("wordlist", {})
+        if not wl:
+            await ctx.send("Wordlist is empty.")
+            return
+        lines = [f"{k}: {v}" for k, v in wl.items()]
+        # send as a short message (not embed) to keep it simple
+        await ctx.send("Current wordlist:\n" + "\n".join(lines))
