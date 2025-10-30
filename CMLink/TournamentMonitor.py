@@ -147,9 +147,10 @@ class TournamentMonitor:
             try:
                 interval = await self.config.Poll_Interval()
                 await self._tick_all_guilds()
-            except Exception:
-                # swallow to keep loop alive
-                pass
+            except Exception as e:
+                # log and push to Loki instead of swallowing
+                _logger.exception("Loop iteration error")
+                asyncio.create_task(self._push_loki("ERROR", "loop_iteration_error", {"error": str(e)}))
             await asyncio.sleep(max(2, int(interval) if isinstance(interval, int) else 5))
 
     async def _tick_all_guilds(self):
@@ -160,7 +161,9 @@ class TournamentMonitor:
         for guild in list(self.bot.guilds):
             try:
                 await self._process_guild(guild, api_url)
-            except Exception:
+            except Exception as e:
+                _logger.exception("Error during guild processing")
+                asyncio.create_task(self._push_loki("ERROR", "process_guild_error", {"guild": getattr(guild, "id", None), "error": str(e)}))
                 continue
 
     async def _process_guild(self, guild: discord.Guild, api_url: str):
@@ -667,6 +670,8 @@ class TournamentMonitor:
         access = await self._ensure_access_token()
         if not access:
             _logger.warning("No BOT access token available.")
+            # Always push failures to Loki
+            asyncio.create_task(self._push_loki("ERROR", "no_access_token", {"endpoint": api_url}))
             return None, None
 
         base_headers = {
@@ -699,6 +704,7 @@ class TournamentMonitor:
 
         op = _op_name(query)
         req_id = os.urandom(4).hex()
+        start_ts = time.time()
         debug_log = False
         try:
             debug_log = await self.config.Debug_API_Logging()
@@ -719,56 +725,47 @@ class TournamentMonitor:
                         _logger.debug(f"[{req_id}] <- {resp.status} body={_truncate(text)}")
                     return resp.status, text
             except asyncio.TimeoutError:
+                # Always push timeouts to Loki
+                asyncio.create_task(self._push_loki("ERROR", "graphql_timeout", {"op": op, "endpoint": api_url, "req_id": req_id}))
                 if debug_log:
                     _logger.warning(f"[{req_id}] Request timeout for op={op} to {api_url}")
                 return None, None
             except Exception as e:
+                # Always push exceptions to Loki
+                asyncio.create_task(self._push_loki("ERROR", "graphql_exception", {"op": op, "endpoint": api_url, "error": str(e), "req_id": req_id}))
                 if debug_log:
                     _logger.exception(f"[{req_id}] Exception during GraphQL request op={op}: {e}")
                 return None, None
 
         # perform primary request
         status, raw_text = await _do_request(base_headers)
+        elapsed_ms = int((time.time() - start_ts) * 1000)
+
         if raw_text is None:
+            # Already pushed timeout/exception
             return None, status
+
+        # Non-200 HTTP is an error — always push to Loki
+        if status is None or status < 200 or status >= 300:
+            asyncio.create_task(self._push_loki("WARNING", "graphql_http_error", {"op": op, "status": status, "elapsed_ms": elapsed_ms, "body": _truncate(raw_text, 8000), "req_id": req_id}))
+        # Attempt JSON parse
         try:
             js = json.loads(raw_text)
         except Exception:
-            # log full raw_text to Loki if debug enabled and it differs from last
-            try:
-                debug_log = await self.config.Debug_API_Logging()
-            except Exception:
-                debug_log = False
-            if debug_log:
-                prev = self._last_js_by_op.get(op)
-                if raw_text != prev:
-                    # send full raw body to Loki (so we don't truncate interesting failures)
-                    asyncio.create_task(self._push_loki("WARNING", f"raw_nonjson_response op={op}", {"status": status, "body": raw_text, "req_id": req_id}))
-                    self._last_js_by_op[op] = raw_text
-                else:
-                    # duplicate — send a short note
-                    asyncio.create_task(self._push_loki("DEBUG", f"raw_nonjson_response_duplicate op={op}", {"status": status, "note": "same as previous"}))
+            # Always push non-JSON response
+            asyncio.create_task(self._push_loki("WARNING", "graphql_nonjson_response", {"op": op, "status": status, "elapsed_ms": elapsed_ms, "body": _truncate(raw_text, 8000), "req_id": req_id}))
             return None, status
 
-        # log JSON responses to Loki when debug logging enabled and when they differ from last for this op
-        try:
-            debug_log = await self.config.Debug_API_Logging()
-        except Exception:
-            debug_log = False
-
+        # Always push JSON response when debug logging enabled (every 5s during polling)
         if debug_log:
-            prev = self._last_js_by_op.get(op)
-            if raw_text != prev:
-                # full payload differs; push the entire response body to Loki
-                try:
-                    # schedule non-blocking
-                    asyncio.create_task(self._push_loki("DEBUG", f"graphql_response op={op} req={req_id}", {"status": status, "body": js}))
-                except Exception:
-                    pass
-                self._last_js_by_op[op] = raw_text
-            else:
-                # duplicates: send compact note
-                asyncio.create_task(self._push_loki("DEBUG", f"graphql_response_duplicate op={op} req={req_id}", {"status": status}))
+            asyncio.create_task(self._push_loki("DEBUG", "graphql_response", {"op": op, "status": status, "elapsed_ms": elapsed_ms, "body": js, "req_id": req_id}))
+
+        # Push GraphQL errors if present (always)
+        if isinstance(js, dict) and js.get("errors"):
+            try:
+                asyncio.create_task(self._push_loki("WARNING", "graphql_errors", {"op": op, "status": status, "elapsed_ms": elapsed_ms, "errors": js.get("errors"), "req_id": req_id}))
+            except Exception:
+                pass
 
         # detect auth GraphQL errors and attempt one refresh+retry
         def _is_auth_error(js_obj):
@@ -792,25 +789,51 @@ class TournamentMonitor:
                 pass
             new_access = await self._ensure_access_token()
             if not new_access:
+                # push failure to Loki
+                asyncio.create_task(self._push_loki("ERROR", "token_refresh_failed_after_auth_error", {"op": op, "req_id": req_id}))
                 return js, status
             headers_retry = dict(base_headers)
             headers_retry["Authorization"] = f"Bearer {new_access}"
+
+            # retry
             status2, raw_text2 = await _do_request(headers_retry)
+            elapsed_ms2 = int((time.time() - start_ts) * 1000)
             if raw_text2 is None:
+                return None, status2
+            # Always push retry outcome to Loki
+            if status2 is None or status2 < 200 or status2 >= 300:
+                asyncio.create_task(self._push_loki("WARNING", "graphql_http_error_retry", {"op": op, "status": status2, "elapsed_ms": elapsed_ms2, "body": _truncate(raw_text2, 8000), "req_id": req_id}))
                 return None, status2
             try:
                 js2 = json.loads(raw_text2)
             except Exception:
-                if debug_log:
-                    _logger.warning(f"[{req_id}] Failed to parse JSON response for op={op} on retry. Raw: {_truncate(raw_text2, 8000)}")
+                asyncio.create_task(self._push_loki("WARNING", "graphql_nonjson_response_retry", {"op": op, "status": status2, "elapsed_ms": elapsed_ms2, "body": _truncate(raw_text2, 8000), "req_id": req_id}))
                 return None, status2
-            if status2 != 200:
-                if debug_log:
-                    _logger.warning(f"[{req_id}] Non-200 on retry: {status2} for op={op}. Body: {_truncate(raw_text2, 8000)}")
-                return js2, status2
+            if debug_log:
+                asyncio.create_task(self._push_loki("DEBUG", "graphql_response_retry", {"op": op, "status": status2, "elapsed_ms": elapsed_ms2, "body": js2, "req_id": req_id}))
+            if isinstance(js2, dict) and js2.get("errors"):
+                asyncio.create_task(self._push_loki("WARNING", "graphql_errors_retry", {"op": op, "status": status2, "elapsed_ms": elapsed_ms2, "errors": js2.get("errors"), "req_id": req_id}))
             return js2, status2
 
         return js, status
+
+    # Added: convenience wrapper expected elsewhere in the codebase.
+    async def _graphql(self, api_url: str, provided_refresh_token: Optional[str], query: str, variables: dict) -> Optional[dict]:
+        """
+        Wrapper around _graphql_raw that returns the GraphQL 'data' object directly (or None on failure).
+        This prevents AttributeError when callers expect only the data payload.
+        """
+        try:
+            js, status = await self._graphql_raw(api_url, provided_refresh_token, query, variables)
+            if js is None:
+                return None
+            if isinstance(js, dict) and "data" in js:
+                return js.get("data")
+            # If server returned a non-standard JSON (no top-level data), return full parsed body for callers to inspect
+            return js
+        except Exception:
+            _logger.exception("Unexpected error in _graphql wrapper")
+            return None
 
     async def _push_loki(self, level: str, message: str, payload: Optional[dict] = None) -> None:
         """
@@ -857,7 +880,21 @@ class TournamentMonitor:
             # send via aiohttp with BasicAuth
             if not self.session:
                 return
-            post_url = loki_url.rstrip("/") + "/loki/api/v1/push"
+
+            # Allow either base URL or full push endpoint; avoid double-appending
+            push_path = "/loki/api/v1/push"
+            if loki_url.rstrip("/").endswith(push_path.strip("/")) or "/loki/api/v1/push" in loki_url:
+                post_url = loki_url
+            else:
+                post_url = loki_url.rstrip("/") + push_path
+
+            # debug: log host/path (no secrets)
+            try:
+                parsed = urllib.parse.urlparse(post_url)
+                _logger.debug(f"Loki push -> host={parsed.netloc} path={parsed.path}")
+            except Exception:
+                _logger.debug("Loki push -> (unable to parse URL)")
+
             auth = aiohttp.BasicAuth(str(loki_user), loki_key)
             headers = {"Content-Type": "application/json"}
             try:

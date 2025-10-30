@@ -392,6 +392,83 @@ class CMLink(commands.Cog):
         storage.save_link(cm_user_id, member.id)
         await ctx.send(embed=self._make_success("Force Link", f"Linked CM user **{cm_user_id}** to {member.mention}."))
 
+    # New Loki configuration subgroup and commands
+    @settings.group(name="loki", invoke_without_command=True)
+    @commands.is_owner()
+    async def loki(self, ctx: commands.Context):
+        """Configure Grafana Loki logging (basic auth)."""
+        await ctx.send_help()
+
+    @loki.command(name="enable")
+    @commands.is_owner()
+    async def loki_enable(self, ctx: commands.Context):
+        """Enable pushing logs to Loki."""
+        await self.config.LOKI_Enabled.set(True)
+        await ctx.send(embed=self._make_success("Loki Logging Enabled", "Pushes to Loki will be attempted when configured."))
+
+    @loki.command(name="disable")
+    @commands.is_owner()
+    async def loki_disable(self, ctx: commands.Context):
+        """Disable pushing logs to Loki."""
+        await self.config.LOKI_Enabled.set(False)
+        await ctx.send(embed=self._make_embed("Loki Logging Disabled", "Loki pushes are now disabled.", color=discord.Color.orange()))
+
+    @loki.command(name="seturl")
+    @commands.is_owner()
+    async def loki_set_url(self, ctx: commands.Context, url: str):
+        """Set the Loki base URL (e.g. https://logs-prod-036.grafana.net)."""
+        await self.config.LOKI_URL.set(url)
+        await ctx.send(embed=self._make_success("Loki URL Set", f"Loki URL set to:\n{url}"))
+
+    @loki.command(name="setuser")
+    @commands.is_owner()
+    async def loki_set_user(self, ctx: commands.Context, user: str):
+        """Set the Loki basic-auth user (Grafana numeric user id)."""
+        await self.config.LOKI_User.set(user)
+        await ctx.send(embed=self._make_success("Loki User Set", f"Loki user set to: `{user}`"))
+
+    @loki.command(name="setapikey")
+    @commands.is_owner()
+    async def loki_set_apikey(self, ctx: commands.Context, api_key: str):
+        """Set the Loki API key (used as password for basic auth)."""
+        await self.config.LOKI_API_Key.set(api_key)
+        await ctx.send(embed=self._make_success("Loki API Key Stored", "Loki API key stored (hidden)."))
+
+    @loki.command(name="status")
+    @commands.is_owner()
+    async def loki_status(self, ctx: commands.Context):
+        """Show current Loki configuration (API key partially masked)."""
+        try:
+            enabled = bool(await self.config.LOKI_Enabled())
+        except Exception:
+            enabled = False
+        try:
+            url = (await self.config.LOKI_URL()) or "unset"
+        except Exception:
+            url = "unset"
+        try:
+            user = (await self.config.LOKI_User()) or "unset"
+        except Exception:
+            user = "unset"
+        try:
+            key = (await self.config.LOKI_API_Key()) or ""
+        except Exception:
+            key = ""
+        if key:
+            if len(key) <= 4:
+                masked = "****"
+            else:
+                masked = "*" * (len(key) - 4) + key[-4:]
+        else:
+            masked = "unset"
+        desc = (
+            f"- Enabled: {'Yes' if enabled else 'No'}\n"
+            f"- URL: {url}\n"
+            f"- User: {user}\n"
+            f"- API Key: {masked}"
+        )
+        await ctx.send(embed=self._make_embed("Loki Configuration", desc))
+
     def cog_unload(self):
         # Stop background task and cleanup
         if hasattr(self, "monitor") and self.monitor:
