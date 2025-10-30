@@ -349,15 +349,24 @@ class CMLink(commands.Cog):
     @commands.has_guild_permissions(manage_guild=True)
     async def admin_settings(self, ctx: commands.Context):
         """Show guild settings (no API secrets)."""
-        g = self.config.guild(ctx.guild)
-        update_channel_id = await g.update_channel_id()
-        lobby_voice_id = await g.lobby_voice_id()
-        category_id = await g.tournament_category_id()
-        poll = await self.config.Poll_Interval()  # safe to show
+        # Read the raw guild config dict to avoid accessor/caching surprises
+        cfg = await self.config.guild(ctx.guild).all()
+        update_channel_id = cfg.get("update_channel_id")
+        lobby_voice_id = cfg.get("lobby_voice_id")
+        category_id = cfg.get("tournament_category_id")
+        poll = await self.config.Poll_Interval()
 
-        update_ch = ctx.guild.get_channel(update_channel_id) if update_channel_id else None
-        lobby_vc = ctx.guild.get_channel(lobby_voice_id) if lobby_voice_id else None
-        category = ctx.guild.get_channel(category_id) if category_id else None
+        def to_int(idv):
+            if idv is None:
+                return None
+            try:
+                return int(idv)
+            except Exception:
+                return None
+
+        update_ch = ctx.guild.get_channel(to_int(update_channel_id)) if update_channel_id else None
+        lobby_vc = ctx.guild.get_channel(to_int(lobby_voice_id)) if lobby_voice_id else None
+        category = ctx.guild.get_channel(to_int(category_id)) if category_id else None
 
         desc = (
             f"- Update channel: {update_ch.mention if update_ch else 'unset'}\n"
