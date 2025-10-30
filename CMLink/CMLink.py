@@ -223,7 +223,8 @@ class CMLink(commands.Cog):
     @commands.has_guild_permissions(manage_guild=True)
     async def set_update_channel(self, ctx: commands.Context, channel: TextChannel):
         """Set the channel where tournament updates will be posted for this guild."""
-        await self.config.guild(ctx.guild).update({"update_channel_id": channel.id})
+        # Persist explicitly using the accessor to avoid accidental key mismatches
+        await self.config.guild(ctx.guild).update_channel_id.set(channel.id)
         await ctx.send(embed=self._make_success("Update Channel Set", f"Tournament update channel set to {channel.mention}."))
 
     @tournament_settings.command(name="setlobbyvoice")
@@ -231,7 +232,8 @@ class CMLink(commands.Cog):
     @commands.has_guild_permissions(manage_guild=True)
     async def set_lobby_voice(self, ctx: commands.Context, channel: VoiceChannel):
         """Set the voice channel used as the tournament lobby for this guild."""
-        await self.config.guild(ctx.guild).update({"lobby_voice_id": channel.id})
+        # Persist explicitly using the accessor
+        await self.config.guild(ctx.guild).lobby_voice_id.set(channel.id)
         await ctx.send(embed=self._make_success("Lobby Voice Set", f"Tournament lobby voice channel set to **{channel.name}**."))
 
     @tournament_settings.command(name="setcategory")
@@ -239,7 +241,8 @@ class CMLink(commands.Cog):
     @commands.has_guild_permissions(manage_guild=True)
     async def set_category(self, ctx: commands.Context, category: CategoryChannel):
         """Set the category under which tournament channels will be created for this guild."""
-        await self.config.guild(ctx.guild).update({"tournament_category_id": category.id})
+        # Persist explicitly using the accessor
+        await self.config.guild(ctx.guild).tournament_category_id.set(category.id)
         await ctx.send(embed=self._make_success("Category Set", f"Tournament category set to **{category.name}**."))
 
     @tournament.command(name="add")
@@ -349,14 +352,13 @@ class CMLink(commands.Cog):
     @commands.has_guild_permissions(manage_guild=True)
     async def admin_settings(self, ctx: commands.Context):
         """Show guild settings (no API secrets)."""
-        # Read the raw guild config dict to avoid accessor/caching surprises
-        cfg = await self.config.guild(ctx.guild).all()
-        update_channel_id = cfg.get("update_channel_id")
-        lobby_voice_id = cfg.get("lobby_voice_id")
-        category_id = cfg.get("tournament_category_id")
+        # Read individual settings using accessors to ensure we use the same keys/names as the setters
+        update_channel_id = await self.config.guild(ctx.guild).update_channel_id()
+        lobby_voice_id = await self.config.guild(ctx.guild).lobby_voice_id()
+        category_id = await self.config.guild(ctx.guild).tournament_category_id()
         poll = await self.config.Poll_Interval()
 
-        def to_int(idv):
+        def maybe_int(idv):
             if idv is None:
                 return None
             try:
@@ -364,9 +366,9 @@ class CMLink(commands.Cog):
             except Exception:
                 return None
 
-        update_ch = ctx.guild.get_channel(to_int(update_channel_id)) if update_channel_id else None
-        lobby_vc = ctx.guild.get_channel(to_int(lobby_voice_id)) if lobby_voice_id else None
-        category = ctx.guild.get_channel(to_int(category_id)) if category_id else None
+        update_ch = ctx.guild.get_channel(maybe_int(update_channel_id)) if update_channel_id else None
+        lobby_vc = ctx.guild.get_channel(maybe_int(lobby_voice_id)) if lobby_voice_id else None
+        category = ctx.guild.get_channel(maybe_int(category_id)) if category_id else None
 
         desc = (
             f"- Update channel: {update_ch.mention if update_ch else 'unset'}\n"
