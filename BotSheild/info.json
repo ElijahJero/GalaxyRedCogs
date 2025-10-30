@@ -1,0 +1,19 @@
+{
+  "author": [
+    "Elijah Jero"
+  ],
+  "name": "BotSheild",
+  "short": "Bot protection features",
+  "description": "Provides bot protection features including captcha verification for new members and scam detection for suspicious messages. Helps protect your server from automated bots and potential scams.",
+  "install_msg": "BotSheild cog loaded. Use [p]botsheild protect to set up server protection with captcha verification.",
+  "requirements": [],
+  "tags": [
+    "security",
+    "moderation",
+    "protection",
+    "captcha"
+  ],
+  "min_bot_version": "3.5.0",
+  "hidden": false,
+  "type": "COG"
+}

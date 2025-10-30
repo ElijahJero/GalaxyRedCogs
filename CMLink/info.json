@@ -1,0 +1,19 @@
+{
+  "author": [
+    "Elijah Jero"
+  ],
+  "name": "CMLink",
+  "short": "Challenger Mode tournament integration",
+  "description": "Tournament integration with Challenger Mode. Monitors tournaments, creates Discord channels for matches, manages tournament participants, and provides real-time updates on tournament progress.",
+  "install_msg": "CMLink cog loaded. Use [p]cmlink setup to configure your Challenger Mode API credentials and tournament settings.",
+  "requirements": [],
+  "tags": [
+    "tournaments",
+    "gaming",
+    "esports",
+    "integration"
+  ],
+  "min_bot_version": "3.5.0",
+  "hidden": false,
+  "type": "COG"
+}
