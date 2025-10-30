@@ -5,7 +5,7 @@ from discord import TextChannel, VoiceChannel, CategoryChannel  # added imports
 from .TournamentMonitor import TournamentMonitor, Storage  # added import
 from discord import Member  # new: for admin forcelink member resolution
 import re  # added: for UUID-ish detection
-import discord  # new: for Embeds
+import discord  # new/unused in snippet kept from original
 
 class CMLink(commands.Cog):
     """ Cog for tournament integration with Challenger Mode. """
@@ -25,6 +25,11 @@ class CMLink(commands.Cog):
             "API_Token_URL": "https://publicapi.challengermode.com/mk1/v1/auth/access_keys",
             "Poll_Interval": 5,  # in seconds
             "Debug_API_Logging": False,  # added: toggle API response logging
+            # Simple HTTP Loki logging (basic auth) - optional
+            "LOKI_Enabled": False,
+            "LOKI_URL": "",         # e.g. https://logs-prod-036.grafana.net
+            "LOKI_User": "",        # Grafana user id (numeric) for basic auth
+            "LOKI_API_Key": "",     # Grafana API key (use as password in basic auth)
         }
 
         self.config.register_global(**default_global)

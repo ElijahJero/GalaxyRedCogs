@@ -10,20 +10,17 @@ from redbot.core import commands
 import logging  # added
 import datetime  # new
 import time
+import traceback
+import urllib.parse  # new: decode OTEL header env var values
+import re             # new: split header pairs
 
-# set up a simple module logger + file handler (temporary)
+# simplified module logger (no file handler by default)
 _logger = logging.getLogger("CMLink.API")
 if not _logger.handlers:
     _logger.setLevel(logging.DEBUG)
-    try:
-        _fh = logging.FileHandler("cmlink_api.log", encoding="utf-8")
-        _fh.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(message)s"))
-        _logger.addHandler(_fh)
-    except Exception:
-        # fall back to stream handler
-        _sh = logging.StreamHandler()
-        _sh.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(message)s"))
-        _logger.addHandler(_sh)
+    _sh = logging.StreamHandler()
+    _sh.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(message)s"))
+    _logger.addHandler(_sh)
 
 
 class Storage:
@@ -121,6 +118,9 @@ class TournamentMonitor:
         # Active channels per (guild, match_id): {"channels": [ids]}
         self._active_voice: Dict[Tuple[int, str], Dict[str, List[int]]] = {}
         self.storage = Storage("users.json")
+
+        # small cache to avoid re-sending identical API JSON payloads repeatedly
+        self._last_js_by_op: Dict[str, str] = {}
 
     async def start(self):
         if self._task:
@@ -242,8 +242,11 @@ class TournamentMonitor:
                                 )
                                 embed.set_footer(text="CMLink")
                                 await m.send(embed=embed)
+                                # log DM success to Loki
+                                asyncio.create_task(self._push_loki("INFO", "dm_sent", {"guild": guild.id, "member_id": m.id, "match": match.get("id")}))
                             except Exception:
-                                pass
+                                _logger.exception("failed to DM participant")
+                                asyncio.create_task(self._push_loki("WARNING", "dm_failed", {"guild": guild.id, "member_id": getattr(m, "id", None), "match": match.get("id")}))
 
         if new_state == "RUNNING":
             # Create private VCs and move participants from lobby
@@ -440,6 +443,8 @@ class TournamentMonitor:
                 name = f"match-{match['shortId']}"
                 ch = await guild.create_voice_channel(name=name, overwrites=overwrites, category=category, reason="CMLink match voice")
                 channel_map.append(ch)
+                # log creation to Loki
+                asyncio.create_task(self._push_loki("INFO", "voice_channel_created", {"guild": guild.id, "channel_id": ch.id, "name": ch.name, "match": match.get("id")}))
             else:
                 # Per-team VC
                 for team_no, members in teams.items():
@@ -451,6 +456,7 @@ class TournamentMonitor:
                     name = f"match-{match['shortId']}-team{team_no+1}"
                     ch = await guild.create_voice_channel(name=name, overwrites=overwrites, category=category, reason="CMLink match voice")
                     channel_map.append(ch)
+                    asyncio.create_task(self._push_loki("INFO", "voice_channel_created", {"guild": guild.id, "channel_id": ch.id, "name": ch.name, "match": match.get("id"), "team": team_no+1}))
 
             # Move people from lobby to their channel(s)
             if lobby_vc:
@@ -479,6 +485,7 @@ class TournamentMonitor:
             for ch in channel_map:
                 try:
                     await ch.delete(reason="CMLink cleanup (error)")
+                    asyncio.create_task(self._push_loki("WARNING", "voice_channel_deleted_cleanup", {"guild": guild.id, "channel_id": ch.id}))
                 except Exception:
                     pass
 
@@ -727,9 +734,41 @@ class TournamentMonitor:
         try:
             js = json.loads(raw_text)
         except Exception:
+            # log full raw_text to Loki if debug enabled and it differs from last
+            try:
+                debug_log = await self.config.Debug_API_Logging()
+            except Exception:
+                debug_log = False
             if debug_log:
-                _logger.warning(f"[{req_id}] Failed to parse JSON response for op={op}. Raw: {_truncate(raw_text, 8000)}")
+                prev = self._last_js_by_op.get(op)
+                if raw_text != prev:
+                    # send full raw body to Loki (so we don't truncate interesting failures)
+                    asyncio.create_task(self._push_loki("WARNING", f"raw_nonjson_response op={op}", {"status": status, "body": raw_text, "req_id": req_id}))
+                    self._last_js_by_op[op] = raw_text
+                else:
+                    # duplicate — send a short note
+                    asyncio.create_task(self._push_loki("DEBUG", f"raw_nonjson_response_duplicate op={op}", {"status": status, "note": "same as previous"}))
             return None, status
+
+        # log JSON responses to Loki when debug logging enabled and when they differ from last for this op
+        try:
+            debug_log = await self.config.Debug_API_Logging()
+        except Exception:
+            debug_log = False
+
+        if debug_log:
+            prev = self._last_js_by_op.get(op)
+            if raw_text != prev:
+                # full payload differs; push the entire response body to Loki
+                try:
+                    # schedule non-blocking
+                    asyncio.create_task(self._push_loki("DEBUG", f"graphql_response op={op} req={req_id}", {"status": status, "body": js}))
+                except Exception:
+                    pass
+                self._last_js_by_op[op] = raw_text
+            else:
+                # duplicates: send compact note
+                asyncio.create_task(self._push_loki("DEBUG", f"graphql_response_duplicate op={op} req={req_id}", {"status": status}))
 
         # detect auth GraphQL errors and attempt one refresh+retry
         def _is_auth_error(js_obj):
@@ -773,17 +812,63 @@ class TournamentMonitor:
 
         return js, status
 
+    async def _push_loki(self, level: str, message: str, payload: Optional[dict] = None) -> None:
+        """
+        Best-effort async push to Grafana Loki via simple HTTP (basic auth).
+        Matches the sample usage: POST to /loki/api/v1/push with auth=(USER, API_KEY).
+        Quietly returns when not configured or on error.
+        """
+        try:
+            try:
+                enabled = bool(await self.config.LOKI_Enabled())
+            except Exception:
+                enabled = False
+            if not enabled:
+                return
 
-    async def _graphql(self, api_url: str, provided_refresh_token: Optional[str], query: str, variables: dict) -> Optional[dict]:
-        """
-        Compatibility helper returning only the 'data' object or None.
-        """
-        js, status = await self._graphql_raw(api_url, provided_refresh_token, query, variables)
-        if js is None:
-            return None
-        if isinstance(js, dict) and "data" in js:
-            return js.get("data")
-        return None
+            try:
+                loki_url = (await self.config.LOKI_URL()) or ""
+                loki_user = (await self.config.LOKI_User()) or ""
+                loki_key = (await self.config.LOKI_API_Key()) or ""
+            except Exception:
+                return
+
+            if not loki_url or not loki_user or not loki_key:
+                return
+
+            # Build a single stream payload similar to the sample
+            ts_nano = str(int(time.time() * 1e9))
+            entry = {
+                "level": level,
+                "msg": message,
+            }
+            if payload is not None:
+                entry["payload"] = payload
+
+            streams = {
+                "streams": [
+                    {
+                        "stream": {"job": "cmlink", "module": "TournamentMonitor", "level": level},
+                        "values": [[ts_nano, json.dumps(entry, ensure_ascii=False)]],
+                    }
+                ]
+            }
+
+            # send via aiohttp with BasicAuth
+            if not self.session:
+                return
+            post_url = loki_url.rstrip("/") + "/loki/api/v1/push"
+            auth = aiohttp.BasicAuth(str(loki_user), loki_key)
+            headers = {"Content-Type": "application/json"}
+            try:
+                async with self.session.post(post_url, json=streams, headers=headers, auth=auth, timeout=10) as resp:
+                    if resp.status < 200 or resp.status >= 300:
+                        text = await resp.text()
+                        _logger.warning(f"Loki HTTP push returned {resp.status}: {text}")
+            except Exception:
+                _logger.exception("Failed to push logs to Loki HTTP endpoint")
+        except Exception:
+            _logger.exception("Unexpected error in _push_loki: " + traceback.format_exc())
 
     async def _ensure_access_token(self) -> Optional[str]:
         """Exchange the stored refresh key for a short-lived BOT access token."""
@@ -815,6 +900,8 @@ class TournamentMonitor:
                 text = await resp.text()
                 if resp.status != 200:
                     _logger.warning(f"Token exchange failed: {resp.status} body={text}")
+                    # also send to Loki
+                    asyncio.create_task(self._push_loki("ERROR", "token_exchange_failed", {"status": resp.status, "body": text}))
                     return None
                 js = json.loads(text)
                 token = js.get("value")
@@ -839,4 +926,5 @@ class TournamentMonitor:
                 return token
         except Exception as e:
             _logger.exception(f"Token exchange exception: {e}")
+            asyncio.create_task(self._push_loki("ERROR", "token_exchange_exception", {"error": str(e)}))
             return None
