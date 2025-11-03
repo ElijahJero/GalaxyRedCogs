@@ -40,9 +40,27 @@ def analyze_text(content: str, wordlist: Dict[str, float]) -> Tuple[float, Dict[
             pattern = r"\b" + re.escape(key) + r"\b"
             found = re.findall(pattern, text, flags=re.I)
             count = len(found)
+
+            # If no whole-word matches, also check if any word in the text starts or ends with the token.
+            # We extract simple word tokens (alphanumeric + underscore) and perform lower-case starts/ends checks.
+            # Each word counts at most once per token (even if both starts and ends).
+            if count == 0:
+                extra = 0
+                try:
+                    words = re.findall(r"\b\w+\b", text, flags=re.I)
+                    for w in words:
+                        lw = w.lower()
+                        if lw == key:
+                            # exact match would have been caught, but guard anyway
+                            continue
+                        if lw.startswith(key) or lw.endswith(key):
+                            extra += 1
+                except Exception:
+                    extra = 0
+                count += extra
+
             if count:
                 total += s * count
                 matches[key] = matches.get(key, 0) + count
 
     return float(total), matches
-
