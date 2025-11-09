@@ -401,6 +401,9 @@ class BotSheild(commands.Cog):
             return
         if message.guild is None:
             return
+        if message.type != discord.MessageType.default:
+            return
+
 
         protected_servers = await self.config.protected_servers()
         guild_id = str(message.guild.id)
