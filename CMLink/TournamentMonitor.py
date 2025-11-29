@@ -240,7 +240,7 @@ class TournamentMonitor:
                             try:
                                 embed = discord.Embed(
                                     title="Match Ready",
-                                    description=f"Your match is ready in **{guild.name}**.\nPlease join the lobby voice channel: **#{lobby_vc.name}**",
+                                    description=f"Your tournament match is ready in **{guild.name}**.\nPlease join the lobby voice channel: **#{lobby_vc.name}**",
                                     color=discord.Color.blue(),
                                 )
                                 embed.set_footer(text="CMLink")
@@ -265,7 +265,7 @@ class TournamentMonitor:
                 try:
                     embed = discord.Embed(
                         title="Match Concluded",
-                        description=f"**{display_tourn}** — Match **{match_number}** concluded.",
+                        description=f"**{display_tourn}** - Match **{match_number}** concluded.",
                         color=discord.Color.green(),
                     )
                     # include detailed results as a field to keep the description concise
@@ -357,7 +357,7 @@ class TournamentMonitor:
                             score = (entry.get("score") if entry else None)
                             pos = (entry.get("position") if entry else None)
                             marker = "🏆 " if winner_pos is not None and ln == winner_pos else ""
-                            parts.append(f"{marker}Team {ln+1}: {', '.join(member_texts) or 'Unknown'} — score={score if score is not None else '?'} — pos={pos if pos is not None else '?'}")
+                            parts.append(f"{marker}Team {ln+1}: {', '.join(member_texts) or 'Unknown'} - score={score if score is not None else '?'} — pos={pos if pos is not None else '?'}")
                         winners_text = "\n".join(parts) if parts else "Results unavailable."
                     else:
                         winners_text = "No match results available to determine winners."
@@ -380,11 +380,32 @@ class TournamentMonitor:
         Produce a multiline summary:
         - For each lineup: CM username and Discord mention (if linked and member of guild)
         - lineup score and position
+        - If a single lineup has the highest score, mark that lineup as "Victory".
+          If tied for highest or scores are unavailable, omit the victory marker.
         The result is kept reasonably short to fit embed field limits.
         """
         res = match.get("results") or {}
-        lineup_results = {lr.get("lineupNumber"): lr for lr in (res.get("lineupResults") or [])}
+        lineup_results_list = (res.get("lineupResults") or [])
+        lineup_results = {lr.get("lineupNumber"): lr for lr in lineup_results_list if lr and lr.get("lineupNumber") is not None}
         lineups = match.get("lineups", []) or []
+
+        # Determine winner by highest score; ties or missing scores -> no winner
+        scores = []
+        for lr in lineup_results_list:
+            sc = lr.get("score")
+            ln = lr.get("lineupNumber")
+            if sc is not None and ln is not None:
+                scores.append((ln, sc))
+        winner_lineup = None
+        if scores:
+            # find max score and check for tie
+            max_score = max(sc for _, sc in scores)
+            leaders = [ln for ln, sc in scores if sc == max_score]
+            if len(leaders) == 1:
+                winner_lineup = leaders[0]  # single clear winner
+            else:
+                winner_lineup = None  # tie -> no victory label
+
         parts = []
         for lu in lineups:
             ln = lu.get("number", 0)
@@ -404,14 +425,29 @@ class TournamentMonitor:
                                 mention_part = f" ({m.mention})"
                         except Exception:
                             pass
-                # append the resolved member text (this was missing previously)
                 member_texts.append(f"{cm_name}{mention_part}")
-            lr = lineup_results.get(ln, {})
+
+            lr = lineup_results.get(ln, {}) or {}
             score = lr.get("score")
             pos = lr.get("position")
-            score_part = f"score={score}" if score is not None else "score=?"
-            pos_part = f"pos={pos}" if pos is not None else "pos=?"
-            parts.append(f"Team {ln+1}: {', '.join(member_texts) or 'Unknown players'} — {score_part} — {pos_part}")
+
+            # Build formatted block for the team
+            header = f"Team {ln+1}" + (" — Victory" if (winner_lineup is not None and ln == winner_lineup) else "")
+            parts.append(header)
+            if member_texts:
+                for mt in member_texts:
+                    parts.append(mt)
+            else:
+                parts.append("Unknown players")
+            parts.append(f"Score: {score if score is not None else '?'}")
+            parts.append(f"Position: {pos if pos is not None else '?'}")
+
+            # spacer between teams
+            parts.append("")
+
+        # Trim trailing blank line and join
+        while parts and parts[-1] == "":
+            parts.pop()
         return "\n".join(parts) if parts else "Results unavailable."
 
     async def _create_and_move(
@@ -965,3 +1001,4 @@ class TournamentMonitor:
             _logger.exception(f"Token exchange exception: {e}")
             asyncio.create_task(self._push_loki("ERROR", "token_exchange_exception", {"error": str(e)}))
             return None
+
