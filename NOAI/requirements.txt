@@ -1,0 +1,5 @@
+discord.py~=2.6.3
+torch~=2.4.1
+pillow~=10.4.0
+transformers~=4.46.3
+aiohttp~=3.9.5
