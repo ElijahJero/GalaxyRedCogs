@@ -66,7 +66,7 @@ async def extract_images_from_message(self, msg: discord.Message, maximagesizemb
         elif emb.thumbnail and getattr(emb.thumbnail, 'url', None):
             url = emb.thumbnail.url
         if url:
-            downloaded = await self._download_image_from_url(url)
+            downloaded = await download_image_from_url(self, url, max_bytes)
             if downloaded:
                 data, filename = downloaded
                 images.append({
@@ -83,7 +83,7 @@ async def extract_images_from_message(self, msg: discord.Message, maximagesizemb
         # avoid duplicates
         if any(url == i.get('url') for i in images):
             continue
-        downloaded = await self._download_image_from_url(url)
+        downloaded = await download_image_from_url(self, url, max_bytes)
         if downloaded:
             data, filename = downloaded
             images.append({
@@ -103,7 +103,7 @@ async def extract_images_from_message(self, msg: discord.Message, maximagesizemb
                 continue
             if any(url == i.get('url') for i in images):
                 continue
-            downloaded = await self._download_image_from_url(url)
+            downloaded = await download_image_from_url(self, url, max_bytes)
             if downloaded:
                 data, filename = downloaded
                 images.append({
@@ -187,3 +187,26 @@ async def download_image_from_url(self, url: str, max_bytes: int) -> Optional[Tu
     finally:
         if session_created and session and not session.closed:
             await session.close()
+
+def value_to_rgb(value: float) -> Tuple[int, int, int]:
+    """Return an (r, g, b) tuple for value in [0, 100].
+
+    0 -> (0,255,0) green
+    100 -> (255,0,0) red
+    Values are clamped to [0,100] and interpolated linearly.
+    """
+    v = max(0.0, min(100.0, float(value)))
+    t = v / 100.0
+    r = int(round(255 * t))
+    g = int(round(255 * (1 - t)))
+    b = 0
+    return (r, g, b)
+
+
+def value_to_hex(value: float) -> int:
+    """Return integer color 0xRRGGBB for a float value between 0 and 100.
+
+    Example: 0 -> 0x00FF00 (green), 100 -> 0xFF0000 (red)
+    """
+    r, g, b = value_to_rgb(value)
+    return (r << 16) | (g << 8) | b

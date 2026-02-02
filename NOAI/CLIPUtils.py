@@ -28,34 +28,40 @@ def _sync_score_image_bytes(image_bytes: bytes) -> float:
         _load_clip_model()
 
     # Open image from bytes and ensure RGB
+    img = None
     try:
         img = Image.open(io.BytesIO(image_bytes)).convert("RGB")
     except Exception as e:
         raise RuntimeError(f"Failed to open image: {e}")
 
-    prompts = [
-        "a real photograph taken by a human",
-        "an AI generated image",
-        "a digitally generated artwork",
-        "a natural unedited photo"
-    ]
-
-    # Prepare inputs and move to device
-    inputs = _CLIP_PROCESSOR(text=prompts, images=img, return_tensors="pt", padding=True)
-    inputs = {k: v.to(_CLIP_DEVICE) for k, v in inputs.items()}
-
-    # Inference (no grad)
-    with torch.no_grad():
-        outputs = _CLIP_MODEL(**inputs)
-
-    # Softmax over prompts for the single image and combine AI-like prompts
     try:
-        probs = outputs.logits_per_image.softmax(dim=1)[0]
-        ai_score = (probs[1] + probs[2]).item() * 100.0
-    except Exception as e:
-        raise RuntimeError(f"Model output parsing failed: {e}")
+        prompts = [
+            "a real photograph taken by a human",
+            "an AI generated image",
+            "a digitally generated artwork",
+            "a natural unedited photo"
+        ]
 
-    return round(ai_score, 2)
+        # Prepare inputs and move to device
+        inputs = _CLIP_PROCESSOR(text=prompts, images=img, return_tensors="pt", padding=True)
+        inputs = {k: v.to(_CLIP_DEVICE) for k, v in inputs.items()}
+
+        # Inference (no grad)
+        with torch.no_grad():
+            outputs = _CLIP_MODEL(**inputs)
+
+        # Softmax over prompts for the single image and combine AI-like prompts
+        try:
+            probs = outputs.logits_per_image.softmax(dim=1)[0]
+            ai_score = (probs[1] + probs[2]).item() * 100.0
+        except Exception as e:
+            raise RuntimeError(f"Model output parsing failed: {e}")
+
+        return round(ai_score, 2)
+    finally:
+        # Explicitly close the PIL Image to free memory
+        if img is not None:
+            img.close()
 
 
 async def analize_image(self, data: bytes, filename: str, url: str, ctx) -> float:
@@ -68,3 +74,16 @@ async def analize_image(self, data: bytes, filename: str, url: str, ctx) -> floa
     except Exception as e:
         # Return a readable error so the calling command can forward it to the user
         return -1
+
+def certainty_string_generator(certainty_score) -> str:
+    if (certainty_score > 80):
+        return "Very likely AI generated"
+    elif (certainty_score > 60):
+        return "Probably AI generated"
+    elif (certainty_score > 40):
+        return "Uncertain if AI generated"
+    elif (certainty_score > 20):
+        return "Probably human made or modified"
+    else:
+        return "Likely human made or modified"
+
