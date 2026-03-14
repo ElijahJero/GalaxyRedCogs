@@ -1,0 +1,19 @@
+{
+  "author": [
+    "Elijah Jero"
+  ],
+  "name": "ModToolsPlus",
+  "short": "Advanced moderation tools",
+  "description": "Provides advanced moderation tools including account quarantine. Quarantine locks a user out of all mutual servers (useful when an account is hacked) and automatically re-applies the restriction if they rejoin.",
+  "install_msg": "ModToolsPlus loaded. Use [p]modtoolsplus quarantine <user> to quarantine a compromised account.",
+  "requirements": [],
+  "tags": [
+    "moderation",
+    "security",
+    "quarantine"
+  ],
+  "min_bot_version": "3.5.0",
+  "hidden": false,
+  "type": "COG"
+}
+
