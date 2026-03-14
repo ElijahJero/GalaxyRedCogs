@@ -222,6 +222,70 @@ class ModToolsPlus(commands.Cog):
         except Exception:
             pass
 
+    @modtoolsplus.command(name="quarantinelist")
+    @commands.has_permissions(manage_roles=True)
+    async def quarantine_list(self, ctx: commands.Context):
+        """List all quarantined users and their status across mutual servers."""
+        quarantined = await self.config.quarantined_users()
+        if not quarantined:
+            await ctx.send(embed=discord.Embed(
+                description="No users are currently quarantined.",
+                color=discord.Color.green(),
+            ))
+            return
+
+        embed = discord.Embed(
+            title="🔒 Quarantined Users",
+            color=discord.Color.orange(),
+        )
+
+        for uid in quarantined:
+            try:
+                user = await self.bot.fetch_user(int(uid))
+                user_str = f"{user} (ID: `{uid}`)"
+            except Exception:
+                user_str = f"Unknown User (ID: `{uid}`)"
+
+            # Check which mutual guilds they are in and whether the role is applied
+            role_applied = []
+            role_missing = []
+            not_in_guild = []
+
+            for guild in self.bot.guilds:
+                member = guild.get_member(int(uid))
+                if member is None:
+                    not_in_guild.append(guild.name)
+                    continue
+                role = discord.utils.get(guild.roles, name=QUARANTINE_ROLE_NAME)
+                if role and role in member.roles:
+                    role_applied.append(guild.name)
+                else:
+                    role_missing.append(guild.name)
+
+            status_lines = []
+            if role_applied:
+                status_lines.append("✅ Role active: " + ", ".join(role_applied))
+            if role_missing:
+                status_lines.append("⚠️ Role missing: " + ", ".join(role_missing))
+            if not_in_guild:
+                status_lines.append("➖ Not in server: " + ", ".join(not_in_guild))
+
+            embed.add_field(
+                name=user_str,
+                value="\n".join(status_lines) if status_lines else "No mutual servers",
+                inline=False,
+            )
+
+        # If there are too many fields, Discord will error — chunk into multiple embeds
+        if len(embed.fields) > 25:
+            await ctx.send(embed=discord.Embed(
+                description="Too many quarantined users to display in one message. Showing first 25.",
+                color=discord.Color.yellow(),
+            ))
+            embed._fields = embed._fields[:25]
+
+        await ctx.send(embed=embed)
+
     @commands.Cog.listener()
     async def on_member_join(self, member: discord.Member):
         """Re-apply quarantine role if a quarantined user joins any server the bot is in."""
