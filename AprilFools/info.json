@@ -1,0 +1,18 @@
+{
+  "author": [
+    "Elijah Jero"
+  ],
+  "name": "AprilFools",
+  "short": "April Fools fake scam giveaway prank",
+  "description": "Lets the bot owner deploy a convincing (but harmless) fake scam giveaway message to any channels they choose. The rickroll link is disguised as a prize claim button. Run via DM so no one sees you set it up.",
+  "install_msg": "AprilFools cog loaded. DM the bot and use [p]fool <rickroll-url> <#channel1> [#channel2] ... to deploy the prank.",
+  "requirements": [],
+  "tags": [
+    "fun",
+    "prank",
+    "april fools"
+  ],
+  "min_bot_version": "3.5.0",
+  "hidden": false,
+  "type": "COG"
+}
