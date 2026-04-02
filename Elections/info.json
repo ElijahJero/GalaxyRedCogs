@@ -1,0 +1,20 @@
+{
+  "author": [
+    "Elijah Jero"
+  ],
+  "name": "Elections",
+  "short": "Anonymous elections and voting",
+  "description": "Run anonymous elections in your server. Votes are cast privately in DMs, voter identity and ballot choices are stored separately so no one can ever correlate who voted for whom. Supports single and multi-winner positions with plurality tabulation.",
+  "install_msg": "Elections cog loaded. Use [p]election start <#channel> with a JSON config file attached to start an election.",
+  "requirements": [],
+  "tags": [
+    "elections",
+    "voting",
+    "anonymous",
+    "polls",
+    "moderation"
+  ],
+  "min_bot_version": "3.5.0",
+  "hidden": false,
+  "type": "COG"
+}
