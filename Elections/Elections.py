@@ -128,8 +128,8 @@ def _parse_config(raw: dict, guild: discord.Guild) -> dict:
         pos_abstain: bool = bool(pos.get("allow_abstain", global_abstain))
 
         candidates_raw = pos.get("candidates", [])
-        if not isinstance(candidates_raw, list) or len(candidates_raw) < 2:
-            errors.append(f"Position {i+1} ({pname!r}) must have at least 2 candidates")
+        if not isinstance(candidates_raw, list) or len(candidates_raw) == 0:
+            errors.append(f"Position {i+1} ({pname!r}) must have at least 1 candidate")
             candidates_raw = []
 
         cands: List[dict] = []
