@@ -512,7 +512,7 @@ class ElectionVoteView(View):
             next_btn.callback = next_cb
             self.add_item(next_btn)
 
-        summary_btn = Button(label="View Summary", style=discord.ButtonStyle.primary, row=1)
+        summary_btn = Button(label="View Summary and Submit", style=discord.ButtonStyle.primary, row=1)
         async def summary_cb(interaction: discord.Interaction):
             await self._clear_desc_messages()
             self.page = "summary"
