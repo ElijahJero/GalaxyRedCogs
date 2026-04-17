@@ -755,6 +755,27 @@ class ElectionVoteView(View):
 
         return embed
 
+    async def on_error(
+        self,
+        interaction: discord.Interaction,
+        error: Exception,
+        item: discord.ui.Item,
+    ) -> None:
+        # 10062 = Unknown Interaction — token expired (e.g. after a bot restart).
+        # Silently clean up so the user doesn't see a generic "Interaction failed".
+        if isinstance(error, discord.NotFound) and error.code == 10062:
+            self.cog._active_sessions.pop((self.user_id, self.election_id), None)
+            self.stop()
+            try:
+                await interaction.user.send(
+                    "⚠️ Your voting session expired (the bot may have restarted). "
+                    "Please press **Vote Now** on the election announcement to start a new session."
+                )
+            except discord.HTTPException:
+                pass
+            return
+        await super().on_error(interaction, error, item)
+
     async def on_timeout(self):
         self.cog._active_sessions.pop((self.user_id, self.election_id), None)
         if self.dm_message:
