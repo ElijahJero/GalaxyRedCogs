@@ -1,0 +1,40 @@
+{
+  "author": [
+    "Elijah Jero"
+  ],
+  "name": "PolyglotBridge",
+  "short": "Cross-channel auto translation",
+  "description": "Link language-specific channels into translation bridges. Messages posted in one channel are automatically translated and relayed to every other channel in the bridge.",
+  "install_msg": "PolyglotBridge loaded. Create a bridge with [p]polyglot create <name>, then add channels with [p]polyglot addchannel.",
+  "end_user_data_statement": "This cog does not persistently store data about users. This cog uses Google, Flowery, and optionally OpenAI/DeepL translation APIs.",
+  "min_bot_version": "3.5.0",
+  "min_python_version": [
+    3,
+    10,
+    1
+  ],
+  "permissions": [
+    "embed_links",
+    "send_messages"
+  ],
+  "required_cogs": {},
+  "requirements": [
+    "aiocache",
+    "deepl",
+    "googletrans-py",
+    "msgpack",
+    "openai",
+    "ujson",
+    "pydantic>=2.11,<2.12",
+    "rapidfuzz"
+  ],
+  "tags": [
+    "utility",
+    "translate",
+    "translator",
+    "autotranslate",
+    "multilingual"
+  ],
+  "hidden": false,
+  "type": "COG"
+}

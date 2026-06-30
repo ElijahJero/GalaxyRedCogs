@@ -58,6 +58,29 @@ Tournament integration with Challenger Mode.
 [p]load CMLink
 ```
 
+### PolyglotBridge
+Cross-channel translation bridges for multilingual communities.
+
+**Features:**
+- Link multiple language-specific channels into a translation bridge
+- Automatically relay and translate messages to every other channel in the bridge
+- Manual `[p]translate` command for ad-hoc translations
+- Optional OpenAI and DeepL API keys for higher quality
+
+**Commands:**
+- `[p]polyglot create <name>` - Create a new translation bridge
+- `[p]polyglot addchannel <bridge> <channel> <language>` - Add a channel to a bridge
+- `[p]polyglot view` - View all configured bridges
+- `[p]translate <language> [message]` - Manually translate text
+
+**Installation:**
+```
+[p]cog install GalaxyRedCogs PolyglotBridge
+[p]load PolyglotBridge
+```
+
+Translation API logic adapted from [Fluent](https://github.com/vertyco/vrt-cogs) by Vertyco (MIT License).
+
 ### SongLink
 Universal music link converter.
 

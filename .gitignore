@@ -17,4 +17,7 @@ ENV/
 # OS junk
 .DS_Store
 Thumbs.db
+
+# Random Stff
 /BotSheild/users.json
+fluent/
