@@ -3,7 +3,6 @@ import logging
 import typing as t
 
 import deepl
-import googletrans
 import openai
 from aiohttp import (
     ClientConnectorError,
@@ -11,14 +10,22 @@ from aiohttp import (
     ClientSession,
     ClientTimeout,
 )
-from googletrans.models import Translated
-from httpx import ReadTimeout
 from pydantic import BaseModel, Field
 from rapidfuzz import fuzz
 
 from .constants import deepl_langs, google_langs
 
 log = logging.getLogger("red.galaxy.polyglotbridge.api")
+
+
+async def _to_thread(func, /, *args, **kwargs):
+    """Run a blocking call in a thread pool (Python 3.8 compatible)."""
+    if hasattr(asyncio, "to_thread"):
+        return await asyncio.to_thread(func, *args, **kwargs)
+    loop = asyncio.get_running_loop()
+    if kwargs:
+        return await loop.run_in_executor(None, lambda: func(*args, **kwargs))
+    return await loop.run_in_executor(None, func, *args)
 
 
 class Result:
@@ -102,7 +109,7 @@ class TranslateManager:
             if lang[1] > 80:
                 return lang[0]
 
-        return await asyncio.to_thread(_fuzzy_deepl_lang)
+        return await _to_thread(_fuzzy_deepl_lang)
 
     async def fuzzy_google_flowery_lang(self, target: str) -> t.Optional[str]:
         def _fuzzy_google_flowery_lang():
@@ -117,7 +124,7 @@ class TranslateManager:
             if lang[1] > 80:
                 return lang[0]
 
-        return await asyncio.to_thread(_fuzzy_google_flowery_lang)
+        return await _to_thread(_fuzzy_google_flowery_lang)
 
     async def openaitranslate(
         self,
@@ -147,12 +154,12 @@ class TranslateManager:
     ) -> t.Optional[Result]:
         log.debug(f"Deepl: {target_lang}")
         translator = deepl.Translator(self.deepl_key, send_platform_info=False)
-        usage = await asyncio.to_thread(translator.get_usage)
+        usage = await _to_thread(translator.get_usage)
         if usage.any_limit_reached:
             log.warning("Deepl usage limit reached!")
             return None
         try:
-            res: deepl.TextResult = await asyncio.to_thread(
+            res: deepl.TextResult = await _to_thread(
                 translator.translate_text, text=text, target_lang=target_lang, formality=formality
             )
             return Result(text=res.text, src=res.detected_source_lang, dest=target_lang)
@@ -161,11 +168,23 @@ class TranslateManager:
 
     async def google(self, text: str, target_lang: str) -> t.Optional[Result]:
         log.debug(f"Google: {target_lang}")
-        translator = googletrans.Translator()
+        url = "https://translate.googleapis.com/translate_a/single"
+        params = {"client": "gtx", "sl": "auto", "tl": target_lang, "dt": "t", "q": text}
+        timeout = ClientTimeout(total=10)
         try:
-            res: Translated = await asyncio.to_thread(translator.translate, text, target_lang)
-            return Result(text=res.text, src=res.src, dest=res.dest)
-        except (AttributeError, TypeError, ReadTimeout):
+            async with ClientSession(timeout=timeout) as session:
+                async with session.get(url=url, params=params) as res:
+                    if res.status != 200:
+                        return None
+                    data = await res.json(content_type=None)
+                    if not data or not data[0]:
+                        return None
+                    translated = "".join(part[0] for part in data[0] if part and part[0])
+                    if not translated:
+                        return None
+                    src = data[2] if len(data) > 2 and isinstance(data[2], str) else "auto"
+                    return Result(text=translated, src=src, dest=target_lang)
+        except (ClientResponseError, ClientConnectorError, ValueError, TypeError, KeyError):
             return None
 
     @staticmethod

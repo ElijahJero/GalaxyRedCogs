@@ -1,6 +1,6 @@
 {
   "author": [
-    "Elijah Jero"
+    "Galaxy Studios"
   ],
   "name": "PolyglotBridge",
   "short": "Cross-channel auto translation",
@@ -10,7 +10,7 @@
   "min_bot_version": "3.5.0",
   "min_python_version": [
     3,
-    10,
+    8,
     1
   ],
   "permissions": [
@@ -21,7 +21,6 @@
   "requirements": [
     "aiocache",
     "deepl",
-    "googletrans-py",
     "msgpack",
     "openai",
     "ujson",

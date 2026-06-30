@@ -66,10 +66,10 @@ class PolyglotBridge(commands.Cog):
     async def get_bridges(self, guild: discord.Guild) -> dict:
         return await self.config.guild(guild).bridges()
 
-    async def _get_channel_map(self, guild: discord.Guild) -> dict[str, tuple[str, str, dict]]:
+    async def _get_channel_map(self, guild: discord.Guild) -> t.Dict[str, t.Tuple[str, str, dict]]:
         """Map channel_id -> (bridge_id, channel_language, bridge_data)."""
         bridges = await self.get_bridges(guild)
-        mapping: dict[str, tuple[str, str, dict]] = {}
+        mapping: t.Dict[str, t.Tuple[str, str, dict]] = {}
         for bridge_id, bridge in bridges.items():
             for channel_id, language in bridge.get("channels", {}).items():
                 mapping[channel_id] = (bridge_id, language, bridge)
@@ -77,7 +77,7 @@ class PolyglotBridge(commands.Cog):
 
     async def _find_bridge_for_channel(
         self, guild: discord.Guild, channel_id: int
-    ) -> t.Optional[tuple[str, str, dict]]:
+    ) -> t.Optional[t.Tuple[str, str, dict]]:
         return (await self._get_channel_map(guild)).get(str(channel_id))
 
     async def _channel_in_any_bridge(self, guild: discord.Guild, channel_id: int) -> t.Optional[str]:
