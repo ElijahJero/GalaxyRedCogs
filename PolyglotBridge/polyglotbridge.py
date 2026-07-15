@@ -346,13 +346,149 @@ class PolyglotBridge(commands.Cog):
             header = f"**{message.author.display_name}** (from #{source_channel_name}):\n"
             await target_channel.send(f"{header}{trans.text[:1900]}")
 
-    @commands.Cog.listener("on_message_without_command")
-    async def message_handler(self, message: discord.Message):
-        if message.author.bot or not message.guild or not message.content or not message.content.strip():
+    def _extract_forwardable_media_urls(self, message: discord.Message) -> t.List[str]:
+        """
+        Collect media URLs to forward (Discord GIF picker / linked gifv).
+
+        Uploaded files are handled separately via attachments. Discord's GIF picker
+        posts a Tenor/Giphy URL (and an embed), not an attachment — those would
+        otherwise be stripped by _get_translatable_content and dropped.
+        """
+        if message.attachments:
+            return []
+
+        urls: t.List[str] = []
+        content = (message.content or "").strip()
+        if content:
+            found = constants.URL_PATTERN.findall(content)
+            remainder = constants.URL_PATTERN.sub("", content).strip()
+            if found and not remainder:
+                return found
+
+        for embed in message.embeds:
+            if embed.type not in ("image", "gifv", "video"):
+                continue
+            url = embed.url
+            if not url and embed.image:
+                url = embed.image.url
+            if not url and embed.video:
+                url = embed.video.url
+            if url and url not in urls:
+                urls.append(url)
+        return urls
+
+    async def _relay_attachments_to_channel(
+        self,
+        message: discord.Message,
+        target_channel: discord.abc.Messageable,
+        source_channel_name: str,
+    ) -> None:
+        """Re-upload attachments so GIFs stay animated and CDN URLs don't break."""
+        if not message.attachments:
             return
 
-        clean_content = self._get_translatable_content(message.content)
-        if not clean_content:
+        guild = message.guild
+        me = guild.me if guild else None
+        can_embed = (
+            isinstance(target_channel, discord.abc.GuildChannel)
+            and me is not None
+            and target_channel.permissions_for(me).embed_links
+        )
+        can_attach = (
+            not isinstance(target_channel, discord.abc.GuildChannel)
+            or (
+                me is not None
+                and target_channel.permissions_for(me).attach_files
+            )
+        )
+
+        files: t.List[discord.File] = []
+        failed_urls: t.List[str] = []
+        for attachment in message.attachments:
+            if not can_attach:
+                failed_urls.append(attachment.url)
+                continue
+            try:
+                files.append(await attachment.to_file(spoiler=attachment.is_spoiler()))
+            except Exception as e:
+                log.warning(
+                    "Failed to download attachment %s for bridge relay: %s",
+                    attachment.filename,
+                    e,
+                )
+                failed_urls.append(attachment.url)
+
+        attribution = None
+        if can_embed:
+            attribution = discord.Embed(color=message.author.color, url=message.jump_url)
+            attribution.set_author(
+                name=message.author.display_name,
+                icon_url=message.author.display_avatar.url,
+            )
+            attribution.set_footer(text=f"from #{source_channel_name}")
+
+        # Discord allows up to 10 files per message
+        for i in range(0, len(files), 10):
+            chunk = files[i : i + 10]
+            if attribution is not None and i == 0:
+                await target_channel.send(embed=attribution, files=chunk)
+            else:
+                await target_channel.send(files=chunk)
+
+        for url in failed_urls:
+            await self._relay_media_urls_to_channel(
+                message, target_channel, source_channel_name, [url]
+            )
+
+    async def _relay_media_urls_to_channel(
+        self,
+        message: discord.Message,
+        target_channel: discord.abc.Messageable,
+        source_channel_name: str,
+        media_urls: t.List[str],
+    ) -> None:
+        """Forward GIF-picker / linked media with attribution + a bare URL for unfurl."""
+        if not media_urls:
+            return
+
+        guild = message.guild
+        me = guild.me if guild else None
+        can_embed = (
+            isinstance(target_channel, discord.abc.GuildChannel)
+            and me is not None
+            and target_channel.permissions_for(me).embed_links
+        )
+
+        for url in media_urls:
+            # Attribution first (matches translated message style). A custom embed on
+            # the same message as the URL would suppress Discord's link preview.
+            if can_embed:
+                embed = discord.Embed(color=message.author.color, url=message.jump_url)
+                embed.set_author(
+                    name=message.author.display_name,
+                    icon_url=message.author.display_avatar.url,
+                )
+                embed.set_footer(text=f"from #{source_channel_name}")
+                await target_channel.send(embed=embed)
+            else:
+                await target_channel.send(
+                    f"**{message.author.display_name}** (from #{source_channel_name}):"
+                )
+            await target_channel.send(url)
+
+    @commands.Cog.listener("on_message_without_command")
+    async def message_handler(self, message: discord.Message):
+        if message.author.bot or not message.guild:
+            return
+
+        has_text = bool(message.content and message.content.strip())
+        has_attachments = bool(message.attachments)
+        media_urls = self._extract_forwardable_media_urls(message)
+        if not has_text and not has_attachments and not media_urls:
+            return
+
+        clean_content = self._get_translatable_content(message.content) if has_text else None
+        if not clean_content and not has_attachments and not media_urls:
             return
 
         bridge_info = await self._find_bridge_for_channel(message.guild, message.channel.id)
@@ -380,7 +516,14 @@ class PolyglotBridge(commands.Cog):
                 if not perms.send_messages:
                     log.warning("Missing send_messages in %s for bridge relay", cid)
                     return
-            await self._relay_to_channel(message, channel, lang, source_channel_name)
+            if clean_content:
+                await self._relay_to_channel(message, channel, lang, source_channel_name)
+            if has_attachments:
+                await self._relay_attachments_to_channel(message, channel, source_channel_name)
+            if media_urls:
+                await self._relay_media_urls_to_channel(
+                    message, channel, source_channel_name, media_urls
+                )
 
         results = await asyncio.gather(*(relay(cid, lang) for cid, lang in targets), return_exceptions=True)
         for result in results:
