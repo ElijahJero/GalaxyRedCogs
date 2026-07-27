@@ -32,8 +32,102 @@ class BotSheild(commands.Cog):
                     "tld": 0.5,
                 },
             },
+            # warning_links tracks related scam warnings (warning_msg_id -> list of related warning_msg_ids)
+            "warning_links": {},
         }
         self.config.register_global(**default_global)
+        
+        # In-memory cache for repeat message detection (user_id -> list of message records)
+        # Each record: {"hash": str, "timestamp": float, "warning_msg_ids": list, "guild_id": int, "content": str}
+        self.message_cache = {}
+        
+        # Map original message ID to warning message ID (for captcha coordination)
+        self.message_to_warning = {}
+
+    # ----------------------------
+    # Message tracking and similarity detection
+    # ----------------------------
+    def _compute_message_hash(self, content: str) -> str:
+        """
+        Compute a similarity hash for a message by:
+        1. Converting to lowercase
+        2. Stripping URLs and emails (to focus on scam token patterns)
+        3. Generating SHA256 hash
+        Returns: hexadecimal hash string
+        """
+        import hashlib
+        if not content:
+            return ""
+        
+        # Normalize content
+        text = content.lower()
+        
+        # Strip URLs (http/https and www patterns)
+        text = re.sub(r'https?://\S+', '', text)
+        text = re.sub(r'www\.\S+', '', text)
+        
+        # Strip emails
+        text = re.sub(r'\b[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}\b', '', text, flags=re.IGNORECASE)
+        
+        # Normalize whitespace
+        text = ' '.join(text.split())
+        
+        # Generate hash
+        return hashlib.sha256(text.encode('utf-8')).hexdigest()
+
+    def _cleanup_old_cache_entries(self):
+        """Remove cache entries older than 10 minutes (lazy cleanup)."""
+        cutoff = time.time() - 600  # 10 minutes
+        for user_id in list(self.message_cache.keys()):
+            if user_id in self.message_cache:
+                self.message_cache[user_id] = [
+                    entry for entry in self.message_cache[user_id]
+                    if entry.get("timestamp", 0) >= cutoff
+                ]
+                # Remove user key if no entries remain
+                if not self.message_cache[user_id]:
+                    del self.message_cache[user_id]
+
+    def _find_similar_messages(self, user_id: int, guild_id: int, content: str, time_window: int = 60) -> list:
+        """
+        Find similar messages from the same user in the same guild within a time window.
+        
+        Args:
+            user_id: Discord user ID
+            guild_id: Discord guild ID
+            content: Message content to compare
+            time_window: Time window in seconds (default 60 = 1 minute)
+        
+        Returns:
+            List of similar message records with matching hash
+        """
+        # Cleanup old entries first
+        self._cleanup_old_cache_entries()
+        
+        # Check if message is long enough (at least 10 words)
+        word_count = len(content.split())
+        if word_count < 10:
+            return []
+        
+        msg_hash = self._compute_message_hash(content)
+        if not msg_hash:
+            return []
+        
+        # Check cache for this user
+        if user_id not in self.message_cache:
+            return []
+        
+        cutoff = time.time() - time_window
+        similar = []
+        
+        for entry in self.message_cache[user_id]:
+            # Match: same hash, same guild, within time window
+            if (entry.get("hash") == msg_hash and
+                entry.get("guild_id") == guild_id and
+                entry.get("timestamp", 0) >= cutoff):
+                similar.append(entry)
+        
+        return similar
 
     # ----------------------------
     # Admin command group wrappers
@@ -136,11 +230,13 @@ class BotSheild(commands.Cog):
         age_seconds: Optional[int] = None,  # added param
         matches: Optional[dict],
         original_message: discord.Message,
-    ) -> Optional[discord.Message]:
+        related_warning_ids: Optional[list] = None,  # linked warning IDs for repeat messages
+    ) -> Optional[int]:
         """
         Send a concise, high-visibility warning embed focused on giveaway scams.
         Admin reactions remain the same: 🔨 ban+delete, 🚪 kick, ❌ remove warning.
         This function now prepends configured ping roles for the guild (if any).
+        Returns the warning message ID (for linking and tracking).
         """
         # resolve per-guild ping roles (do not modify stored config)
         ping_text = ""
@@ -166,7 +262,7 @@ class BotSheild(commands.Cog):
                 "• Don’t DM, transfer items, or share codes/account info.\n"
                 "• Don’t click unknown links or scan QR codes — they can contain malware.\n"
                 "• If asked to move to another server or external site, be suspicious.\n"
-                "• Nobody is giving away expensive stuff fot free. Never trust a giveaway from a random user.\n\n"
+                "• Nobody is giving away expensive stuff for free. Never trust a giveaway from a random user.\n\n"
                 "This may be a false positive. If you were actually intending to give something away please contact moderator to assist you."
             )
             embed = discord.Embed(
@@ -209,12 +305,29 @@ class BotSheild(commands.Cog):
             except Exception:
                 pass
 
+        # Update warning_links config to link related warnings
+        if related_warning_ids is None:
+            related_warning_ids = []
+        
+        # Build the full set of linked warnings (this warning + all related ones)
+        all_linked_ids = [warn_msg.id] + related_warning_ids
+        
+        try:
+            # Get current warning_links config
+            async with self.config.warning_links() as warning_links:
+                # For each warning in the group, store the full list of linked warnings
+                for wid in all_linked_ids:
+                    warning_links[str(wid)] = [w for w in all_linked_ids if w != wid]
+        except Exception:
+            pass
+
         # Start monitoring reactions (logs include score and full context)
         try:
             asyncio.create_task(self._monitor_admin_reactions(warn_msg, target_member, score, age_str, matches, original_message))
         except Exception:
             pass
-        return warn_msg
+        
+        return warn_msg.id
 
     async def _monitor_admin_reactions(
         self,
@@ -249,7 +362,25 @@ class BotSheild(commands.Cog):
         while True:
             remaining = end - time.time()
             if remaining <= 0:
-                # Timeout: disable admin actions but keep the warning message
+                # Timeout: log to channel, then disable admin actions but keep the warning message
+                log_channel = await self._resolve_log_channel(guild)
+                if log_channel:
+                    try:
+                        e = discord.Embed(title="Warning Timeout", color=discord.Color.dark_red())
+                        e.add_field(name="Target", value=f"{target_member.mention} (ID: {target_member.id})", inline=False)
+                        e.add_field(name="Channel", value=f"#{original_message.channel.name} (ID: {original_message.channel.id})", inline=False)
+                        content = original_message.content or "[empty]"
+                        e.add_field(name="Flagged Message", value=content[:1024], inline=False)
+                        if original_message.attachments:
+                            e.add_field(name="Attachments", value=", ".join(a.url for a in original_message.attachments), inline=False)
+                        e.add_field(name="Score / Matches", value=f"{score:.2f} / {', '.join(list(matches.keys())[:5]) if matches else 'none'}", inline=False)
+                        e.add_field(name="Message Link", value=original_message.jump_url, inline=False)
+                        e.add_field(name="Reason", value="Warning timeout (30 minutes elapsed)", inline=False)
+                        e.set_footer(text=f"Time: {datetime.now(timezone.utc).isoformat()}")
+                        await log_channel.send(embed=e)
+                    except Exception:
+                        pass
+                
                 try:
                     await warn_msg.clear_reactions()
                 except Exception:
@@ -272,7 +403,25 @@ class BotSheild(commands.Cog):
                     check=lambda r, u: r.message.id == warn_msg.id,
                 )
             except asyncio.TimeoutError:
-                # Timeout while waiting: disable actions but keep message
+                # Timeout while waiting: log to channel, then disable actions but keep message
+                log_channel = await self._resolve_log_channel(guild)
+                if log_channel:
+                    try:
+                        e = discord.Embed(title="Warning Timeout", color=discord.Color.dark_red())
+                        e.add_field(name="Target", value=f"{target_member.mention} (ID: {target_member.id})", inline=False)
+                        e.add_field(name="Channel", value=f"#{original_message.channel.name} (ID: {original_message.channel.id})", inline=False)
+                        content = original_message.content or "[empty]"
+                        e.add_field(name="Flagged Message", value=content[:1024], inline=False)
+                        if original_message.attachments:
+                            e.add_field(name="Attachments", value=", ".join(a.url for a in original_message.attachments), inline=False)
+                        e.add_field(name="Score / Matches", value=f"{score:.2f} / {', '.join(list(matches.keys())[:5]) if matches else 'none'}", inline=False)
+                        e.add_field(name="Message Link", value=original_message.jump_url, inline=False)
+                        e.add_field(name="Reason", value="Warning timeout (30 minutes elapsed)", inline=False)
+                        e.set_footer(text=f"Time: {datetime.now(timezone.utc).isoformat()}")
+                        await log_channel.send(embed=e)
+                    except Exception:
+                        pass
+                
                 try:
                     await warn_msg.clear_reactions()
                 except Exception:
@@ -333,9 +482,57 @@ class BotSheild(commands.Cog):
                 else:
                     action_done = "Remove warning"
 
-            # Remove the warning message
+            # CASCADE DELETE: Remove this warning and all linked warnings
+            linked_warning_ids = []
+            try:
+                warning_links = await self.config.warning_links()
+                linked_warning_ids = warning_links.get(str(warn_msg.id), [])
+            except Exception:
+                pass
+            
+            # Delete the current warning message
             try:
                 await warn_msg.delete()
+            except Exception:
+                pass
+            
+            # Delete all linked warnings (cascade)
+            deleted_count = 0
+            for linked_id in linked_warning_ids:
+                try:
+                    # Try to find and delete the linked warning message
+                    linked_msg = None
+                    # Check if it's in the same channel first
+                    try:
+                        linked_msg = await warn_msg.channel.fetch_message(int(linked_id))
+                    except Exception:
+                        pass
+                    
+                    # If not found in same channel, search other channels in guild
+                    if linked_msg is None and guild:
+                        for channel in guild.text_channels:
+                            try:
+                                linked_msg = await channel.fetch_message(int(linked_id))
+                                if linked_msg:
+                                    break
+                            except Exception:
+                                continue
+                    
+                    if linked_msg:
+                        await linked_msg.delete()
+                        deleted_count += 1
+                except Exception:
+                    # Silent fail for already-deleted or inaccessible messages
+                    pass
+            
+            # Clean up warning_links config (remove entries for all deleted warnings)
+            try:
+                async with self.config.warning_links() as warning_links:
+                    # Remove the current warning
+                    warning_links.pop(str(warn_msg.id), None)
+                    # Remove all linked warnings
+                    for linked_id in linked_warning_ids:
+                        warning_links.pop(str(linked_id), None)
             except Exception:
                 pass
 
@@ -345,6 +542,8 @@ class BotSheild(commands.Cog):
                 try:
                     e = discord.Embed(title="Admin Action on Warning", color=discord.Color.orange())
                     e.add_field(name="Action", value=action_done, inline=False)
+                    if deleted_count > 0:
+                        e.add_field(name="Linked Warnings", value=f"Deleted {deleted_count} related warning(s)", inline=False)
                     e.add_field(name="Actor", value=f"{actor.mention if actor else user.mention} (ID: {user.id})", inline=False)
                     e.add_field(name="Target", value=f"{target_member.mention} (ID: {target_member.id})", inline=False)
                     e.add_field(name="Channel", value=f"#{original_message.channel.name} (ID: {original_message.channel.id})", inline=False)
@@ -465,13 +664,68 @@ class BotSheild(commands.Cog):
                 wordlist = scam_conf.get("wordlist", {})
                 score, matches = analyze_text(message.content or "", wordlist)
 
+                # Check for repeat messages (spam detection)
+                similar_messages = self._find_similar_messages(
+                    message.author.id,
+                    message.guild.id,
+                    message.content or "",
+                    time_window=60  # 1 minute
+                )
+                
+                # Add bonus score for repeated messages
+                repeat_bonus = 0.0
+                related_warning_ids = []
+                if similar_messages:
+                    # Collect warning IDs from similar messages for linking
+                    for entry in similar_messages:
+                        related_warning_ids.extend(entry.get("warning_msg_ids", []))
+                    
+                    # Calculate bonus: 0.5 for first repeat, 0.25 for each additional (capped at 0.9)
+                    num_repeats = len(similar_messages)
+                    if num_repeats == 1:
+                        repeat_bonus = 0.5
+                    elif num_repeats == 2:
+                        repeat_bonus = 0.75  # 0.5 + 0.25
+                    else:
+                        repeat_bonus = min(0.9, 0.5 + 0.25 * (num_repeats - 1))
+                    
+                    score += repeat_bonus
+
                 min_score = float(scam_conf.get("min_score", 1.0))
+                
+                # Always store message in cache for repeat detection (regardless of score)
+                msg_hash = self._compute_message_hash(message.content or "")
+                user_id = message.author.id
+                
+                if user_id not in self.message_cache:
+                    self.message_cache[user_id] = []
+                
+                # Add to cache (limit to 50 entries per user)
+                # warning_msg_ids will be populated later if warning is sent
+                cache_entry = {
+                    "hash": msg_hash,
+                    "timestamp": time.time(),
+                    "warning_msg_ids": [],
+                    "guild_id": message.guild.id,
+                    "content": message.content or "",
+                    "channel_id": message.channel.id,
+                    "message_id": message.id,
+                }
+                self.message_cache[user_id].append(cache_entry)
+                
+                # Limit cache size per user
+                if len(self.message_cache[user_id]) > 50:
+                    self.message_cache[user_id] = self.message_cache[user_id][-50:]
+                
                 if score >= min_score:
                     # format how long they've been in server
                     days = age_seconds // 86400
                     hours = (age_seconds % 86400) // 3600
                     minutes = (age_seconds % 3600) // 60
                     age_str = f"{days}d {hours}h {minutes}m"
+
+                    # Variable to store warning message ID (for cache and linking)
+                    warning_msg_id = None
 
                     # If the user is currently verified, remove verification and persist
                     if verified:
@@ -482,9 +736,9 @@ class BotSheild(commands.Cog):
                         except Exception:
                             pass
                         verified = False
-                        # send warning with admin reactions (pass age_seconds)
+                        # send warning with admin reactions (pass age_seconds and related_warning_ids)
                         try:
-                            await self._send_flag_warning(
+                            warning_msg_id = await self._send_flag_warning(
                                 message.channel,
                                 message.author,
                                 score=score,
@@ -492,13 +746,14 @@ class BotSheild(commands.Cog):
                                 age_seconds=age_seconds,
                                 matches=matches,
                                 original_message=message,
+                                related_warning_ids=related_warning_ids,
                             )
                         except Exception:
                             pass
                     else:
-                        # unverified: still send warning with admin reactions (pass age_seconds)
+                        # unverified: still send warning with admin reactions (pass age_seconds and related_warning_ids)
                         try:
-                            await self._send_flag_warning(
+                            warning_msg_id = await self._send_flag_warning(
                                 message.channel,
                                 message.author,
                                 score=score,
@@ -506,9 +761,83 @@ class BotSheild(commands.Cog):
                                 age_seconds=age_seconds,
                                 matches=matches,
                                 original_message=message,
+                                related_warning_ids=related_warning_ids,
                             )
                         except Exception:
                             pass
+                    
+                    # Update cache entry with warning message ID for linking
+                    if warning_msg_id:
+                        # Update the most recent cache entry (the one we just added) with the warning ID
+                        cache_entry["warning_msg_ids"] = [warning_msg_id]
+                        
+                        # Store mapping for captcha coordination
+                        self.message_to_warning[message.id] = warning_msg_id
+                        
+                        # RETROACTIVE WARNINGS: Send warnings for similar messages in other channels
+                        # Collect all existing warning IDs (from current + related)
+                        all_warning_ids = [warning_msg_id] + related_warning_ids
+                        
+                        # Group similar messages by channel (only for messages without warnings)
+                        channels_to_warn = {}  # channel_id -> first message entry from that channel
+                        for entry in similar_messages:
+                            chan_id = entry.get("channel_id")
+                            msg_id = entry.get("message_id")
+                            # Only include if no warning exists yet and it's a different channel
+                            if (chan_id and msg_id and 
+                                chan_id != message.channel.id and
+                                not entry.get("warning_msg_ids")):
+                                if chan_id not in channels_to_warn:
+                                    channels_to_warn[chan_id] = entry
+                        
+                        # Send warnings for each unique channel (without linking yet)
+                        for chan_id, msg_entry in channels_to_warn.items():
+                            try:
+                                # Fetch the channel and message
+                                target_channel = message.guild.get_channel(chan_id)
+                                if not target_channel:
+                                    continue
+                                
+                                original_msg = None
+                                try:
+                                    original_msg = await target_channel.fetch_message(msg_entry["message_id"])
+                                except Exception:
+                                    continue
+                                
+                                if not original_msg:
+                                    continue
+                                
+                                # Send warning for this message (with empty related_warning_ids to avoid duplicate linking)
+                                retro_warning_id = await self._send_flag_warning(
+                                    target_channel,
+                                    message.author,
+                                    score=score,
+                                    age_str=age_str,
+                                    age_seconds=age_seconds,
+                                    matches=matches,
+                                    original_message=original_msg,
+                                    related_warning_ids=[],  # We'll link them all together after
+                                )
+                                
+                                if retro_warning_id:
+                                    all_warning_ids.append(retro_warning_id)
+                                    # Update the cache entry for that message
+                                    msg_entry["warning_msg_ids"] = [retro_warning_id]
+                                    # Store mapping for captcha coordination
+                                    self.message_to_warning[msg_entry["message_id"]] = retro_warning_id
+                            except Exception:
+                                # Silent fail for any issues with retroactive warnings
+                                pass
+                        
+                        # Update warning_links to link ALL warnings together (original + related + retroactive)
+                        if len(all_warning_ids) > 1:
+                            try:
+                                async with self.config.warning_links() as warning_links:
+                                    for wid in all_warning_ids:
+                                        # Each warning should link to all others
+                                        warning_links[str(wid)] = [w for w in all_warning_ids if w != wid]
+                            except Exception:
+                                pass
 
         # refresh member_record from possibly-updated users_data
         member_record = users_data[guild_id].get(member_id, {"verified": False, "progress": 0})
@@ -641,6 +970,45 @@ class BotSheild(commands.Cog):
                     await captcha_msg.delete()
                 except Exception:
                     pass
+                
+                # Delete associated scam warning if it exists
+                warning_msg_id = self.message_to_warning.get(message.id)
+                if warning_msg_id:
+                    try:
+                        # Try to find and delete the warning message
+                        warning_msg = None
+                        # Check in the same channel first
+                        try:
+                            warning_msg = await channel.fetch_message(warning_msg_id)
+                        except Exception:
+                            pass
+                        
+                        # If not found in same channel, search other channels
+                        if warning_msg is None and message.guild:
+                            for guild_channel in message.guild.text_channels:
+                                try:
+                                    warning_msg = await guild_channel.fetch_message(warning_msg_id)
+                                    if warning_msg:
+                                        break
+                                except Exception:
+                                    continue
+                        
+                        if warning_msg:
+                            await warning_msg.delete()
+                    except Exception:
+                        # Silent fail if warning already deleted or inaccessible
+                        pass
+                    
+                    # Clean up tracking structures
+                    self.message_to_warning.pop(message.id, None)
+                    
+                    # Clean up warning_links config
+                    try:
+                        async with self.config.warning_links() as warning_links:
+                            warning_links.pop(str(warning_msg_id), None)
+                    except Exception:
+                        pass
+                
                 # prepare log info
                 if fail_reason is None:
                     fail_reason = "unknown"
