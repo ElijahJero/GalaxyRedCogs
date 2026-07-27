@@ -21,3 +21,5 @@ Thumbs.db
 # Random Stff
 /BotSheild/users.json
 fluent/
+BotSheild/emoji-test.txt
+BotSheild/generate_emoji_data.py
