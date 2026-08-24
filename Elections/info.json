@@ -6,6 +6,7 @@
   "short": "Anonymous elections and voting",
   "description": "Run anonymous elections in your server. Votes are cast privately in DMs, voter identity and ballot choices are stored separately so no one can ever correlate who voted for whom. Supports single and multi-winner positions with plurality tabulation.",
   "install_msg": "Elections cog loaded. Use [p]election start <#channel> with a JSON config file attached to start an election.",
+  "end_user_data_statement": "This cog stores voter user IDs separately from anonymous ballots so votes cannot be correlated with voters. Election configuration and vote tallies are stored until the election is removed.",
   "requirements": [],
   "tags": [
     "elections",

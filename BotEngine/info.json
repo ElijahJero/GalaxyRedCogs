@@ -1,0 +1,20 @@
+{
+  "author": [
+    "Elijah Jero"
+  ],
+  "name": "BotEngine",
+  "short": "Ollama-based Bot Engine chat integration",
+  "description": "Relays Discord messages from enabled channels to an Ollama-based Bot Engine HTTP server and posts the engine's replies. Supports per-channel enable/disable, pauses, cooldowns, user blocks, conversation reset, and basic stats. Requires a separately running Bot Engine server.",
+  "install_msg": "BotEngine loaded. This cog talks to an external Bot Engine HTTP server. Set the URL with `[p]botengine setapi <url>`, then enable a channel with `[p]botengine enable`.",
+  "end_user_data_statement": "This cog stores guild channel settings, pause/cooldown state, and blocked user IDs. Message content is sent to the configured Bot Engine server when a channel is enabled.",
+  "requirements": [],
+  "tags": [
+    "ai",
+    "chat",
+    "ollama",
+    "utility"
+  ],
+  "min_bot_version": "3.5.0",
+  "hidden": false,
+  "type": "COG"
+}

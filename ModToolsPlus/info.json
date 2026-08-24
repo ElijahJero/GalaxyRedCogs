@@ -6,6 +6,7 @@
   "short": "Advanced moderation tools",
   "description": "Provides advanced moderation tools including account quarantine. Quarantine locks a user out of all mutual servers (useful when an account is hacked) and automatically re-applies the restriction if they rejoin.",
   "install_msg": "ModToolsPlus loaded. Use [p]modtoolsplus quarantine <user> to quarantine a compromised account.",
+  "end_user_data_statement": "This cog stores a global list of quarantined user IDs.",
   "requirements": [],
   "tags": [
     "moderation",

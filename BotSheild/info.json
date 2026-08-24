@@ -6,6 +6,7 @@
   "short": "Bot protection features",
   "description": "Provides bot protection features including captcha verification for new members and scam detection for suspicious messages. Helps protect your server from automated bots and potential scams.",
   "install_msg": "BotSheild cog loaded. Use [p]botsheild protect to set up server protection with captcha verification.",
+  "end_user_data_statement": "This cog stores guild protection settings, captcha verification state, and scam-detection configuration. Message content may be scored in memory for scam detection.",
   "requirements": [],
   "tags": [
     "security",

@@ -1,5 +1,6 @@
 {
     "author": ["hollowstrawberry"],
+    "name": "LinkFixer",
     "min_bot_version": "3.5.0",
     "min_python_version": [3,9,0],
     "description": "Sends modified links to embed content from popular social media sites: Twitter, Reddit, TikTok, Instagram, Pixiv. These \"fixed\" links (fxtwitter, vxreddit, etc.) have advantages such as allowing video or showing the full content instead of a snippet. Many people already use these regularly, but the cog is useful due to people that don't know them or can't be bothered to edit their links. Sometimes these embed providers stop working, so I do my best to keep the cog updated.",
@@ -9,5 +10,6 @@
     "requirements": [],
     "short": "Sends modified links to embed content from popular social media sites.",
     "end_user_data_statement": "This cog does not store user data.",
-    "tags": ["crab", "link", "url", "fix", "embed", "twitter", "x", "instagram", "pixiv", "reddit", "tiktok", "social"]
+    "tags": ["crab", "link", "url", "fix", "embed", "twitter", "x", "instagram", "pixiv", "reddit", "tiktok", "social"],
+    "type": "COG"
 }

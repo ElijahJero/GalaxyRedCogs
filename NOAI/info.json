@@ -1,0 +1,29 @@
+{
+  "author": [
+    "Elijah Jero"
+  ],
+  "name": "NOAI",
+  "short": "Detect AI-generated images with CLIP",
+  "description": "Analyzes Discord images with OpenAI CLIP to estimate whether they look AI-generated. Supports attachments, embeds, stickers, and replied-to messages. Text analysis is not implemented yet. Downloads the CLIP model on first use and uses extra pip packages (torch, transformers, pillow).",
+  "install_msg": "NOAI loaded. This cog has heavy memory/CPU use: it installs torch, transformers, and pillow, and downloads openai/clip-vit-base-patch32 on first analysis. Enable it with `[p]noai enableimages true`, then `[p]noai analyze` with an image.",
+  "end_user_data_statement": "This cog stores per-guild enable flags and an image-score threshold. Images are processed locally with CLIP; they are not uploaded to a third-party API.",
+  "requirements": [
+    "torch",
+    "pillow",
+    "transformers"
+  ],
+  "tags": [
+    "moderation",
+    "ai",
+    "images",
+    "utility"
+  ],
+  "min_bot_version": "3.5.0",
+  "min_python_version": [
+    3,
+    9,
+    0
+  ],
+  "hidden": false,
+  "type": "COG"
+}

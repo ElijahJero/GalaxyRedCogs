@@ -6,6 +6,7 @@
   "short": "Universal music links",
   "description": "Automatically generates universal SongLink embeds for supported music service URLs. Admins can register channels for auto-processing.",
   "install_msg": "SongLink cog loaded. Use [p]songchannel register <channel> to enable automatic SongLink conversion.",
+  "end_user_data_statement": "This cog stores registered channel IDs. Music URLs are sent to the song.link API to generate universal links.",
   "requirements": [],
   "tags": [
     "music",

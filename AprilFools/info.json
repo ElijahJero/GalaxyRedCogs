@@ -6,6 +6,7 @@
   "short": "April Fools fake scam giveaway prank",
   "description": "Lets the bot owner deploy a convincing (but harmless) fake scam giveaway message to any channels they choose. The rickroll link is disguised as a prize claim button. Run via DM so no one sees you set it up.",
   "install_msg": "AprilFools cog loaded. DM the bot and use [p]fool <rickroll-url> <#channel1> [#channel2] ... to deploy the prank.",
+  "end_user_data_statement": "This cog does not persistently store data about users.",
   "requirements": [],
   "tags": [
     "fun",

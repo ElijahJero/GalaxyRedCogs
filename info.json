@@ -1,0 +1,9 @@
+{
+  "author": [
+    "Elijah Jero"
+  ],
+  "name": "GalaxyRedCogs",
+  "short": "Cogs for Red-DiscordBot by Elijah Jero / Galaxy Studios.",
+  "description": "A collection of Red-DiscordBot cogs covering moderation, translation, music links, tournament integration, elections, and more. Third-party cogs in this repo retain their original authors.",
+  "install_msg": "Thanks for adding GalaxyRedCogs! Use `[p]cog list GalaxyRedCogs` to see available cogs, then `[p]cog install GalaxyRedCogs <cog_name>` to install one. See the GitHub README for setup notes — some cogs need API keys or extra pip packages."
+}

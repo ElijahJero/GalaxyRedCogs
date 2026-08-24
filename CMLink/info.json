@@ -5,7 +5,8 @@
   "name": "CMLink",
   "short": "Challenger Mode tournament integration",
   "description": "Tournament integration with Challenger Mode. Monitors tournaments, creates Discord channels for matches, manages tournament participants, and provides real-time updates on tournament progress.",
-  "install_msg": "CMLink cog loaded. Use [p]cmlink setup to configure your Challenger Mode API credentials and tournament settings.",
+  "install_msg": "CMLink cog loaded. Set your Challenger Mode refresh token with `[p]cmlink settings setrefreshtoken`, then configure tournament channels with `[p]cmlink tournament settings`.",
+  "end_user_data_statement": "This cog stores Discord user IDs linked to Challenger Mode accounts, guild tournament settings, and API credentials. It contacts the Challenger Mode API.",
   "requirements": [],
   "tags": [
     "tournaments",
