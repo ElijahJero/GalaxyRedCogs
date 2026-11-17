@@ -4,9 +4,9 @@
   ],
   "name": "SongLink",
   "short": "Universal music links",
-  "description": "Automatically generates universal SongLink embeds for supported music service URLs. Admins can register channels for auto-processing.",
-  "install_msg": "SongLink cog loaded. Use [p]songchannel register <channel> to enable automatic SongLink conversion.",
-  "end_user_data_statement": "This cog stores registered channel IDs. Music URLs are sent to the song.link API to generate universal links.",
+  "description": "Generates universal SongLink embeds for supported music service URLs using an authenticated Odesli API key. Admins can register channels for auto-processing.",
+  "install_msg": "SongLink cog loaded. A bot owner needs to set the Odesli API key with [p]songlinkset apikey before links will resolve. The default rate limit is 1 request per minute and 60 per hour; change it with [p]songlinkset ratelimit. Use [p]songchannel register <channel> to enable automatic conversion.",
+  "end_user_data_statement": "This cog stores registered channel IDs, the bot owner's Odesli API key, and recent request timestamps used to enforce rate limits. Music URLs are sent to the Odesli API to generate universal links.",
   "requirements": [],
   "tags": [
     "music",

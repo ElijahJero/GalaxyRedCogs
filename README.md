@@ -203,18 +203,25 @@ See [PolyglotBridge/README.md](PolyglotBridge/README.md) for setup examples. Tra
 
 ### SongLink
 
-Universal music link converter via song.link.
+Universal music link converter via the authenticated Odesli API (song.link).
 
 **Features:**
 - Converts Spotify, Apple Music, YouTube Music, and other supported URLs
 - Optional auto-processing in registered channels
-- Rate-limit aware
+- Owner-set API key, stored in Red's config
+- Default rate limit of 1 request per minute and 60 per hour, both changeable
 
 **Commands:**
+- `[p]songlinkset apikey <key>` — Store the Odesli API key (owner). The bot tries to delete that message.
+- `[p]songlinkset clearapikey` — Remove the stored key (owner)
+- `[p]songlinkset ratelimit <per_minute> [per_hour]` — Change the rate limit (owner). Defaults are 1 and 60.
+- `[p]songlinkset status` — Show whether a key is set and the current limits (owner)
 - `[p]songlink <url>` — Convert a music URL (`[p]sl` alias)
 - `[p]songchannel register <channel>` — Auto-convert in a channel
 - `[p]songchannel remove <channel>` — Stop auto-converting
 - `[p]songchannel list` — List registered channels
+
+Set the key in Discord after the cog is loaded. It is not stored in this repository.
 
 ```
 [p]cog install GalaxyRedCogs SongLink
